@@ -6,6 +6,7 @@ import { languageNames, translate, type Language } from "./i18n";
 
 type RepresentationRole = "first_found" | "nostalgia" | "variant";
 type StorageState = "local" | "external" | "shadow" | "missing";
+type ThemePreference = "system" | "dark" | "light";
 
 interface TrackIdentity {
   id: string;
@@ -113,6 +114,12 @@ function App() {
     const stored = window.localStorage.getItem("music-os-language");
     return stored === "de" || stored === "en" || stored === "es" ? stored : "de";
   });
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
+    const stored = window.localStorage.getItem("music-os-theme");
+    return stored === "dark" || stored === "light" || stored === "system"
+      ? stored
+      : "system";
+  });
   const [tracks, setTracks] = useState<TrackRecord[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [importForm, setImportForm] = useState<ImportForm>(initialImportForm);
@@ -181,6 +188,21 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("music-os-language", language);
   }, [language]);
+
+  useEffect(() => {
+    window.localStorage.setItem("music-os-theme", themePreference);
+    const applyTheme = () => {
+      const systemTheme = window.matchMedia("(prefers-color-scheme: light)").matches
+        ? "light"
+        : "dark";
+      document.documentElement.dataset.theme =
+        themePreference === "system" ? systemTheme : themePreference;
+    };
+    applyTheme();
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    media.addEventListener("change", applyTheme);
+    return () => media.removeEventListener("change", applyTheme);
+  }, [themePreference]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -555,6 +577,19 @@ function App() {
                   {languageNames[option]}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="language-select">
+            {t("theme")}
+            <select
+              value={themePreference}
+              onChange={(event) =>
+                setThemePreference(event.target.value as ThemePreference)
+              }
+            >
+              <option value="system">{t("themeSystem")}</option>
+              <option value="dark">{t("themeDark")}</option>
+              <option value="light">{t("themeLight")}</option>
             </select>
           </label>
           <span>
