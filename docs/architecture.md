@@ -68,6 +68,31 @@ The core import path:
 The import path does not modify, rename, normalize, retag, or delete the source
 file.
 
+## Export naming policy
+
+Music OS keeps original vault filenames checksum-based, but export filenames are
+generated from canonical metadata. The current core policy is:
+
+- Album-oriented export:
+  - `<track-number>. <artist-name> - <track-name>.<ext>`
+  - Track numbers are at least two digits: `01`, `02`, `03`.
+  - Large albums or compilations expand the width from the highest known track
+    number, for example `007` when the album has 120 tracks.
+- Loose/single-file export:
+  - `<artist-name> - <track-name>.<ext>`
+  - No track number is included.
+
+Examples:
+
+```text
+03. Eminem - Stan.mp3
+007. Various Artists - Long Compilation Track.flac
+Eminem - Stan.mp3
+```
+
+Export naming is intentionally separate from import. Incorrect original names
+remain preserved as provenance, while exports can use clean canonical names.
+
 ## Future extension points
 
 - Acoustic fingerprinting and loudness metadata tables.
