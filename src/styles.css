@@ -167,7 +167,8 @@ small {
 }
 
 .two-column,
-.three-column {
+.three-column,
+.four-column {
   display: grid;
   gap: 0.75rem;
 }
@@ -178,6 +179,55 @@ small {
 
 .three-column {
   grid-template-columns: 1.2fr repeat(2, minmax(6rem, 0.5fr));
+}
+
+.four-column {
+  grid-template-columns: 1.3fr 1.3fr minmax(7rem, 0.55fr) minmax(9rem, 0.7fr);
+}
+
+.library-card {
+  margin-top: 1rem;
+}
+
+.library-layout {
+  display: grid;
+  grid-template-columns: minmax(20rem, 0.8fr) minmax(0, 1.2fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.detail-panel {
+  border: 1px solid rgba(247, 240, 223, 0.1);
+  border-radius: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.import-summary {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  border: 1px solid rgba(247, 240, 223, 0.1);
+  border-radius: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.summary-grid span {
+  border-radius: 0.75rem;
+  padding: 0.6rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #dbcdb4;
+}
+
+code {
+  color: #f7c873;
 }
 
 .track-list,
@@ -284,8 +334,11 @@ small {
 
   .grid,
   .detail-grid,
+  .library-layout,
   .two-column,
-  .three-column {
+  .three-column,
+  .four-column,
+  .summary-grid {
     grid-template-columns: 1fr;
   }
 

@@ -1,6 +1,7 @@
 use music_os_core::{
-    Archive, AudioAsset, ImportAudioRequest, ImportAudioResult, PlaybackMode, QualityPointerUpdate,
-    RepresentationRole, StorageState, TrackIdentity, TrackRecord,
+    Archive, AudioAsset, ImportAudioRequest, ImportAudioResult, ImportFolderRequest,
+    ImportFolderResult, PlaybackMode, QualityPointerUpdate, RepresentationRole, StorageState,
+    TrackIdentity, TrackRecord,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -22,6 +23,13 @@ struct ImportMusicFileCommand {
     user_rating: Option<i64>,
     semantic_tags: Vec<String>,
     original_tags_json: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportMusicFolderCommand {
+    root_path: PathBuf,
+    user_rating: Option<i64>,
+    semantic_tags: Vec<String>,
 }
 
 #[tauri::command]
@@ -53,6 +61,24 @@ fn import_music_file(
             user_rating: request.user_rating,
             semantic_tags: request.semantic_tags,
             original_tags_json: request.original_tags_json,
+        })
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+fn import_music_folder(
+    state: State<'_, MusicOsState>,
+    request: ImportMusicFolderCommand,
+) -> Result<ImportFolderResult, String> {
+    let archive = state
+        .archive
+        .lock()
+        .map_err(|_| "archive lock poisoned".to_string())?;
+    archive
+        .import_music_folder(ImportFolderRequest {
+            root_path: request.root_path,
+            user_rating: request.user_rating,
+            semantic_tags: request.semantic_tags,
         })
         .map_err(to_command_error)
 }
@@ -135,6 +161,7 @@ fn select_playback_asset(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let (db_path, vault_root) = archive_paths(app.handle())?;
             let archive = Archive::open(db_path, vault_root).map_err(to_boxed_error)?;
@@ -146,6 +173,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_tracks,
             import_music_file,
+            import_music_folder,
             update_track_rating,
             replace_track_tags,
             update_storage_state,

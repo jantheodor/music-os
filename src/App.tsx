@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 type RepresentationRole = "first_found" | "nostalgia" | "variant";
 type StorageState = "local" | "external" | "shadow" | "missing";
@@ -14,6 +15,7 @@ interface TrackIdentity {
   best_lossless_asset_id?: string | null;
   best_verified_asset_id?: string | null;
   nostalgia_asset_id?: string | null;
+  preferred_cover_asset_id?: string | null;
 }
 
 interface AudioAsset {
@@ -58,6 +60,26 @@ interface ImportForm {
   semanticTags: string;
 }
 
+interface FolderImportForm {
+  rootPath: string;
+  userRating: string;
+  semanticTags: string;
+}
+
+interface ImportFolderResult {
+  scanned_files: number;
+  imported_files: number;
+  skipped_files: number;
+  errors: Array<{ path: string; error: string }>;
+}
+
+interface Filters {
+  text: string;
+  tags: string;
+  minRating: string;
+  storageState: "" | StorageState;
+}
+
 const roles: RepresentationRole[] = ["first_found", "nostalgia", "variant"];
 const storageStates: StorageState[] = ["local", "external", "shadow", "missing"];
 
@@ -71,20 +93,62 @@ const initialImportForm: ImportForm = {
   semanticTags: "",
 };
 
+const initialFolderForm: FolderImportForm = {
+  rootPath: "",
+  userRating: "",
+  semanticTags: "",
+};
+
 function App() {
   const [tracks, setTracks] = useState<TrackRecord[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [importForm, setImportForm] = useState<ImportForm>(initialImportForm);
+  const [folderForm, setFolderForm] = useState<FolderImportForm>(initialFolderForm);
+  const [lastFolderImport, setLastFolderImport] = useState<ImportFolderResult | null>(
+    null,
+  );
+  const [filters, setFilters] = useState<Filters>({
+    text: "",
+    tags: "",
+    minRating: "",
+    storageState: "",
+  });
   const [ratingDraft, setRatingDraft] = useState("");
   const [tagDraft, setTagDraft] = useState("");
   const [status, setStatus] = useState("Ready to preserve, optimize, and find music.");
   const [error, setError] = useState<string | null>(null);
 
+  const filteredTracks = useMemo(
+    () => tracks.filter((record) => matchesFilters(record, filters)),
+    [tracks, filters],
+  );
+
   const selectedTrack = useMemo(
     () =>
-      tracks.find((record) => record.identity.id === selectedTrackId) ?? tracks[0],
-    [selectedTrackId, tracks],
+      filteredTracks.find((record) => record.identity.id === selectedTrackId) ??
+      filteredTracks[0] ??
+      tracks.find((record) => record.identity.id === selectedTrackId) ??
+      tracks[0],
+    [filteredTracks, selectedTrackId, tracks],
   );
+
+  const libraryStats = useMemo(() => {
+    const assetCount = tracks.reduce((sum, record) => sum + record.assets.length, 0);
+    const localAssets = tracks.reduce(
+      (sum, record) =>
+        sum + record.assets.filter((asset) => asset.storage_state === "local").length,
+      0,
+    );
+    const tags = new Set(
+      tracks.flatMap((record) => record.tags.map((tag) => tag.normalized_label)),
+    );
+    return {
+      tracks: tracks.length,
+      assets: assetCount,
+      localAssets,
+      tags: tags.size,
+    };
+  }, [tracks]);
 
   useEffect(() => {
     void refreshTracks();
@@ -111,7 +175,7 @@ function App() {
 
   async function importTrack(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setStatus("Importing into checksum vault and extracting filename tags...");
+    setStatus("Importing file into checksum vault and extracting filename tags...");
     setError(null);
     try {
       await invoke("import_music_file", {
@@ -128,11 +192,35 @@ function App() {
         },
       });
       setImportForm(initialImportForm);
-      setStatus("Import complete. Source bytes were preserved and hashtags became tags.");
+      setStatus("File import complete. Source bytes were preserved.");
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
-      setStatus("Import failed.");
+      setStatus("File import failed.");
+    }
+  }
+
+  async function importFolder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStatus("Scanning folder and importing supported audio files...");
+    setError(null);
+    setLastFolderImport(null);
+    try {
+      const result = await invoke<ImportFolderResult>("import_music_folder", {
+        request: {
+          root_path: folderForm.rootPath,
+          user_rating: optionalNumber(folderForm.userRating),
+          semantic_tags: splitTags(folderForm.semanticTags),
+        },
+      });
+      setLastFolderImport(result);
+      setStatus(
+        `Folder import complete: ${result.imported_files} imported, ${result.skipped_files} skipped, ${result.errors.length} errors.`,
+      );
+      await refreshTracks();
+    } catch (caught) {
+      setError(formatError(caught));
+      setStatus("Folder import failed.");
     }
   }
 
@@ -183,6 +271,42 @@ function App() {
     }
   }
 
+  async function chooseFolder() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose a music folder",
+      });
+      if (typeof selected === "string") {
+        setFolderForm({ ...folderForm, rootPath: selected });
+      }
+    } catch (caught) {
+      setError(formatError(caught));
+    }
+  }
+
+  async function chooseFile() {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        title: "Choose an audio file",
+        filters: [
+          {
+            name: "Audio",
+            extensions: ["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac", "ogg", "opus"],
+          },
+        ],
+      });
+      if (typeof selected === "string") {
+        setImportForm({ ...importForm, sourcePath: selected });
+      }
+    } catch (caught) {
+      setError(formatError(caught));
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero">
@@ -190,14 +314,14 @@ function App() {
           <p className="eyebrow">Local-first collection optimizer</p>
           <h1>Music OS</h1>
           <p>
-            Track identities hold ratings and semantic tags. Audio assets hold
-            concrete files, storage state, quality facts, and personal roles.
+            Import folders, preserve source files, extract filename hashtags, rate
+            globally, and filter a growing local music collection.
           </p>
         </div>
         <div className="principles">
-          <span>Original bytes stay sacred</span>
-          <span>Best versions are pointers</span>
-          <span>Tags are current search labels</span>
+          <span>{libraryStats.tracks} track identities</span>
+          <span>{libraryStats.assets} audio assets</span>
+          <span>{libraryStats.tags} semantic tags</span>
         </div>
       </section>
 
@@ -208,12 +332,80 @@ function App() {
 
       <div className="grid">
         <section className="card">
-          <h2>Import folder/file candidate</h2>
+          <h2>Folder import</h2>
           <p className="muted">
-            Filename suffixes like <code>#2020 #house #party</code> are extracted
-            into TrackIdentity tags while the original filename remains preserved
-            on the AudioAsset.
+            Recursively imports supported audio files and turns suffixes like{" "}
+            <code>#2020 #house #party</code> into searchable TrackIdentity tags.
           </p>
+          <form className="stack" onSubmit={importFolder}>
+            <label>
+              Music folder path
+              <input
+                required
+                value={folderForm.rootPath}
+                onChange={(event) =>
+                  setFolderForm({ ...folderForm, rootPath: event.target.value })
+                }
+                placeholder="/home/me/Music"
+              />
+            </label>
+            <button type="button" onClick={() => void chooseFolder()}>
+              Choose folder...
+            </button>
+            <div className="two-column">
+              <label>
+                Default rating
+                <input
+                  type="number"
+                  min="1"
+                  max="5"
+                  value={folderForm.userRating}
+                  onChange={(event) =>
+                    setFolderForm({ ...folderForm, userRating: event.target.value })
+                  }
+                />
+              </label>
+              <label>
+                Add tags to all
+                <input
+                  value={folderForm.semanticTags}
+                  onChange={(event) =>
+                    setFolderForm({ ...folderForm, semanticTags: event.target.value })
+                  }
+                  placeholder="#import-2026 #check"
+                />
+              </label>
+            </div>
+            <button type="submit">Import folder</button>
+          </form>
+
+          {lastFolderImport && (
+            <div className="import-summary">
+              <strong>Last folder import</strong>
+              <div className="summary-grid">
+                <span>Scanned: {lastFolderImport.scanned_files}</span>
+                <span>Imported: {lastFolderImport.imported_files}</span>
+                <span>Skipped: {lastFolderImport.skipped_files}</span>
+                <span>Errors: {lastFolderImport.errors.length}</span>
+              </div>
+              {lastFolderImport.errors.length > 0 && (
+                <details>
+                  <summary>Show import errors</summary>
+                  <ul>
+                    {lastFolderImport.errors.slice(0, 20).map((item) => (
+                      <li key={`${item.path}-${item.error}`}>
+                        <code>{item.path}</code>: {item.error}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className="card">
+          <h2>Single file import</h2>
           <form className="stack" onSubmit={importTrack}>
             <label>
               Source file path
@@ -226,6 +418,9 @@ function App() {
                 placeholder="/music/Eminem - Stan #2000 #herzschmerz.mp3"
               />
             </label>
+            <button type="button" onClick={() => void chooseFile()}>
+              Choose audio file...
+            </button>
             <div className="two-column">
               <label>
                 Artist
@@ -256,7 +451,7 @@ function App() {
                   onChange={(event) =>
                     setImportForm({ ...importForm, version: event.target.value })
                   }
-                  placeholder="Radio edit, live, remaster..."
+                  placeholder="Radio edit, live..."
                 />
               </label>
               <label>
@@ -301,17 +496,82 @@ function App() {
                 placeholder="#party #deutsch #bass"
               />
             </label>
-            <button type="submit">Import non-destructively</button>
+            <button type="submit">Import file</button>
           </form>
         </section>
+      </div>
 
-        <section className="card">
-          <h2>Track identities</h2>
-          {tracks.length === 0 ? (
-            <p className="empty">No tracks yet.</p>
-          ) : (
+      <section className="card library-card">
+        <div className="detail-header">
+          <div>
+            <p className="eyebrow">Library retrieval</p>
+            <h2>Search and filter</h2>
+          </div>
+          <button type="button" onClick={() => void refreshTracks()}>
+            Refresh
+          </button>
+        </div>
+        <div className="four-column">
+          <label>
+            Text
+            <input
+              value={filters.text}
+              onChange={(event) => setFilters({ ...filters, text: event.target.value })}
+              placeholder="artist, title, filename"
+            />
+          </label>
+          <label>
+            Tags
+            <input
+              value={filters.tags}
+              onChange={(event) => setFilters({ ...filters, tags: event.target.value })}
+              placeholder="#party #deutsch"
+            />
+          </label>
+          <label>
+            Min rating
+            <input
+              type="number"
+              min="1"
+              max="5"
+              value={filters.minRating}
+              onChange={(event) =>
+                setFilters({ ...filters, minRating: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            Storage
+            <select
+              value={filters.storageState}
+              onChange={(event) =>
+                setFilters({
+                  ...filters,
+                  storageState: event.target.value as "" | StorageState,
+                })
+              }
+            >
+              <option value="">Any</option>
+              {storageStates.map((state) => (
+                <option key={state} value={state}>
+                  {label(state)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <p className="muted">
+          Showing {filteredTracks.length} of {tracks.length} tracks. Tag filters are
+          AND-based for now.
+        </p>
+
+        {tracks.length === 0 ? (
+          <p className="empty">No tracks yet. Import a small test folder first.</p>
+        ) : (
+          <div className="library-layout">
             <div className="track-list">
-              {tracks.map((record) => (
+              {filteredTracks.map((record) => (
                 <button
                   className={
                     record.identity.id === selectedTrack?.identity.id
@@ -324,7 +584,11 @@ function App() {
                 >
                   <span>
                     <strong>{record.identity.title}</strong>
-                    <small>{record.identity.artist}</small>
+                    <small>
+                      {record.identity.artist}
+                      {record.identity.version ? ` - ${record.identity.version}` : ""}
+                    </small>
+                    <small>{record.tags.map((tag) => `#${tag.normalized_label}`).join(" ")}</small>
                   </span>
                   <span className="state">
                     {record.identity.user_rating
@@ -334,101 +598,133 @@ function App() {
                 </button>
               ))}
             </div>
-          )}
-        </section>
-      </div>
 
-      {selectedTrack && (
-        <section className="detail card">
-          <div className="detail-header">
-            <div>
-              <p className="eyebrow">TrackIdentity</p>
-              <h2>{selectedTrack.identity.title}</h2>
-              <p>
-                {selectedTrack.identity.artist}
-                {selectedTrack.identity.version
-                  ? ` - ${selectedTrack.identity.version}`
-                  : ""}
-              </p>
-            </div>
-          </div>
-
-          <div className="detail-grid">
-            <section>
-              <h3>Global rating</h3>
-              <form className="stack" onSubmit={updateRating}>
-                <label>
-                  User rating, 1-5 stars
-                  <input
-                    type="number"
-                    min="1"
-                    max="5"
-                    value={ratingDraft}
-                    onChange={(event) => setRatingDraft(event.target.value)}
-                  />
-                </label>
-                <button type="submit">Save rating</button>
-              </form>
-            </section>
-
-            <section>
-              <h3>Semantic tags</h3>
-              <form className="stack" onSubmit={replaceTags}>
-                <label>
-                  Current tags
-                  <input
-                    value={tagDraft}
-                    onChange={(event) => setTagDraft(event.target.value)}
-                    placeholder="#party #80s #deutsch"
-                  />
-                </label>
-                <button type="submit">Replace current tags</button>
-              </form>
-              <ul className="pill-list">
-                {selectedTrack.tags.map((tag) => (
-                  <li key={tag.id}>#{tag.normalized_label}</li>
-                ))}
-              </ul>
-            </section>
-          </div>
-
-          <section>
-            <h3>Audio assets</h3>
-            <div className="representation-list">
-              {selectedTrack.assets.map((asset) => (
-                <article key={asset.id} className="representation">
+            {selectedTrack && (
+              <section className="detail-panel">
+                <div className="detail-header">
                   <div>
-                    <strong>{label(asset.role)}</strong>
-                    <p>
-                      {asset.format?.toUpperCase() ?? "Unknown format"}
-                      {asset.true_lossless_verified ? " - verified lossless" : ""}
-                      {asset.suspected_transcode ? " - suspected transcode" : ""}
-                    </p>
-                    {asset.original_filename && <small>{asset.original_filename}</small>}
+                    <p className="eyebrow">TrackIdentity</p>
+                    <h2>{selectedTrack.identity.title}</h2>
+                    <p>{selectedTrack.identity.artist}</p>
                   </div>
-                  <select
-                    value={asset.storage_state}
-                    onChange={(event) =>
-                      void updateStorageState(
-                        asset.id,
-                        event.target.value as StorageState,
-                      )
-                    }
-                  >
-                    {storageStates.map((state) => (
-                      <option key={state} value={state}>
-                        {label(state)}
-                      </option>
+                </div>
+
+                <div className="detail-grid">
+                  <section>
+                    <h3>Global rating</h3>
+                    <form className="stack" onSubmit={updateRating}>
+                      <label>
+                        User rating, 1-5 stars
+                        <input
+                          type="number"
+                          min="1"
+                          max="5"
+                          value={ratingDraft}
+                          onChange={(event) => setRatingDraft(event.target.value)}
+                        />
+                      </label>
+                      <button type="submit">Save rating</button>
+                    </form>
+                  </section>
+
+                  <section>
+                    <h3>Semantic tags</h3>
+                    <form className="stack" onSubmit={replaceTags}>
+                      <label>
+                        Current tags
+                        <input
+                          value={tagDraft}
+                          onChange={(event) => setTagDraft(event.target.value)}
+                          placeholder="#party #80s #deutsch"
+                        />
+                      </label>
+                      <button type="submit">Replace current tags</button>
+                    </form>
+                    <ul className="pill-list">
+                      {selectedTrack.tags.map((tag) => (
+                        <li key={tag.id}>#{tag.normalized_label}</li>
+                      ))}
+                    </ul>
+                  </section>
+                </div>
+
+                <section>
+                  <h3>Audio assets</h3>
+                  <div className="representation-list">
+                    {selectedTrack.assets.map((asset) => (
+                      <article key={asset.id} className="representation">
+                        <div>
+                          <strong>{label(asset.role)}</strong>
+                          <p>
+                            {asset.format?.toUpperCase() ?? "Unknown format"}
+                            {asset.true_lossless_verified ? " - verified lossless" : ""}
+                            {asset.suspected_transcode ? " - suspected transcode" : ""}
+                          </p>
+                          {asset.original_filename && <small>{asset.original_filename}</small>}
+                        </div>
+                        <select
+                          value={asset.storage_state}
+                          onChange={(event) =>
+                            void updateStorageState(
+                              asset.id,
+                              event.target.value as StorageState,
+                            )
+                          }
+                        >
+                          {storageStates.map((state) => (
+                            <option key={state} value={state}>
+                              {label(state)}
+                            </option>
+                          ))}
+                        </select>
+                      </article>
                     ))}
-                  </select>
-                </article>
-              ))}
-            </div>
-          </section>
-        </section>
-      )}
+                  </div>
+                </section>
+              </section>
+            )}
+          </div>
+        )}
+      </section>
     </main>
   );
+}
+
+function matchesFilters(record: TrackRecord, filters: Filters) {
+  const text = filters.text.trim().toLowerCase();
+  if (text.length > 0) {
+    const haystack = [
+      record.identity.artist,
+      record.identity.title,
+      record.identity.version ?? "",
+      ...record.assets.map((asset) => asset.original_filename ?? ""),
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (!haystack.includes(text)) {
+      return false;
+    }
+  }
+
+  const wantedTags = splitTags(filters.tags).map(normalizeTag);
+  const actualTags = new Set(record.tags.map((tag) => tag.normalized_label));
+  if (wantedTags.some((tag) => !actualTags.has(tag))) {
+    return false;
+  }
+
+  const minRating = optionalNumber(filters.minRating);
+  if (minRating !== null && (record.identity.user_rating ?? 0) < minRating) {
+    return false;
+  }
+
+  if (
+    filters.storageState &&
+    !record.assets.some((asset) => asset.storage_state === filters.storageState)
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function optional(value: string) {
@@ -446,6 +742,10 @@ function splitTags(value: string) {
     .split(/\s+/)
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function normalizeTag(value: string) {
+  return value.trim().replace(/^#/, "").toLowerCase();
 }
 
 function label(value: string) {

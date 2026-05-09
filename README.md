@@ -76,3 +76,19 @@ npm run tauri:dev
 ```
 
 On Linux, Tauri development may require WebKitGTK and related system libraries.
+
+## Trying the current GUI
+
+The MVP GUI is now useful for small test collections:
+
+1. Run `npm run tauri:dev`.
+2. Use **Choose folder...** to select a small music folder.
+3. Optionally set a default rating or tags such as `#test-import`.
+4. Import the folder.
+5. Use the Library Retrieval filters for text, tags, minimum rating, or storage
+   state.
+6. Select a track to edit its global rating, replace current tags, or inspect
+   AudioAssets.
+
+Start with copied test files, not your main collection. The import path remains
+non-destructive, but the product is still an MVP.

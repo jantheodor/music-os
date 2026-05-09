@@ -266,6 +266,27 @@ pub struct ImportAudioResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportFolderRequest {
+    pub root_path: PathBuf,
+    pub user_rating: Option<i64>,
+    pub semantic_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportFolderError {
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportFolderResult {
+    pub scanned_files: usize,
+    pub imported_files: usize,
+    pub skipped_files: usize,
+    pub errors: Vec<ImportFolderError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTrackIdentityRequest {
     pub artist: String,
     pub title: String,
@@ -489,6 +510,102 @@ impl Archive {
             extracted_filename_tags,
             was_already_in_vault,
         })
+    }
+
+    pub fn import_music_folder(&self, request: ImportFolderRequest) -> Result<ImportFolderResult> {
+        validate_rating(request.user_rating)?;
+        let metadata = fs::metadata(&request.root_path).with_context(|| {
+            format!(
+                "failed to read folder metadata {}",
+                request.root_path.display()
+            )
+        })?;
+        if !metadata.is_dir() {
+            return Err(anyhow!(
+                "music folder import path is not a directory: {}",
+                request.root_path.display()
+            ));
+        }
+
+        let mut result = ImportFolderResult {
+            scanned_files: 0,
+            imported_files: 0,
+            skipped_files: 0,
+            errors: Vec::new(),
+        };
+        let mut pending = vec![request.root_path];
+
+        while let Some(path) = pending.pop() {
+            let entries = match fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    result.errors.push(ImportFolderError {
+                        path: path.to_string_lossy().to_string(),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        result.errors.push(ImportFolderError {
+                            path: path.to_string_lossy().to_string(),
+                            error: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                let entry_path = entry.path();
+                let entry_type = match entry.file_type() {
+                    Ok(entry_type) => entry_type,
+                    Err(error) => {
+                        result.errors.push(ImportFolderError {
+                            path: entry_path.to_string_lossy().to_string(),
+                            error: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
+
+                if entry_type.is_dir() {
+                    pending.push(entry_path);
+                    continue;
+                }
+                if !entry_type.is_file() {
+                    result.skipped_files += 1;
+                    continue;
+                }
+
+                result.scanned_files += 1;
+                if !is_supported_audio_file(&entry_path) {
+                    result.skipped_files += 1;
+                    continue;
+                }
+
+                match self.import_audio_file(ImportAudioRequest {
+                    source_path: entry_path.clone(),
+                    track_identity_id: None,
+                    title: None,
+                    artist: None,
+                    version: None,
+                    role: None,
+                    user_rating: request.user_rating,
+                    semantic_tags: request.semantic_tags.clone(),
+                    original_tags_json: None,
+                }) {
+                    Ok(_) => result.imported_files += 1,
+                    Err(error) => result.errors.push(ImportFolderError {
+                        path: entry_path.to_string_lossy().to_string(),
+                        error: error.to_string(),
+                    }),
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     pub fn register_audio_asset(&self, request: RegisterAudioAssetRequest) -> Result<AudioAsset> {
@@ -1604,6 +1721,16 @@ fn image_extension(mime_type: Option<&str>, source_path: &Path) -> Option<String
     }
 }
 
+fn is_supported_audio_file(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("mp3" | "flac" | "wav" | "aiff" | "aif" | "m4a" | "aac" | "ogg" | "opus")
+    )
+}
+
 fn bool_to_int(value: bool) -> i64 {
     if value {
         1
@@ -2133,5 +2260,42 @@ mod tests {
 
         assert_eq!(interpretation.title.as_deref(), Some("Song #1 Live"));
         assert!(interpretation.tags.is_empty());
+    }
+
+    #[test]
+    fn folder_import_recurses_supported_audio_files_and_reports_skips() {
+        let (test_dir, archive) = archive();
+        let folder = test_dir.path().join("music");
+        let nested = folder.join("nested");
+        fs::create_dir_all(&nested).expect("nested folder");
+        fs::write(
+            folder.join("Nena - 99 Luftballons #80s #deutsch.mp3"),
+            b"mp3",
+        )
+        .expect("mp3");
+        fs::write(nested.join("Daft Punk - Voyager #party.flac"), b"flac").expect("flac");
+        fs::write(folder.join("notes.txt"), b"not audio").expect("text");
+
+        let result = archive
+            .import_music_folder(ImportFolderRequest {
+                root_path: folder,
+                user_rating: Some(4),
+                semantic_tags: vec!["import-test".to_string()],
+            })
+            .expect("folder import");
+
+        assert_eq!(result.imported_files, 2);
+        assert_eq!(result.skipped_files, 1);
+        assert!(result.errors.is_empty());
+
+        let records = archive.list_tracks().expect("tracks");
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|record| record.identity.user_rating == Some(4)));
+        assert!(records.iter().any(|record| record
+            .tags
+            .iter()
+            .any(|tag| tag.normalized_label == "import-test")));
     }
 }
