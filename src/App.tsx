@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 type RepresentationRole = "first_found" | "nostalgia" | "variant";
 type StorageState = "local" | "external" | "shadow" | "missing";
@@ -74,6 +74,13 @@ interface ImportFolderResult {
   errors: Array<{ path: string; error: string }>;
 }
 
+interface ExportM3uResult {
+  destination_path: string;
+  exported_tracks: number;
+  skipped_tracks: number;
+  warnings: string[];
+}
+
 interface Filters {
   text: string;
   tags: string;
@@ -116,6 +123,7 @@ function App() {
   });
   const [ratingDraft, setRatingDraft] = useState("");
   const [tagDraft, setTagDraft] = useState("");
+  const [exportBasketIds, setExportBasketIds] = useState<string[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [status, setStatus] = useState("Ready to preserve, optimize, and find music.");
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +159,14 @@ function App() {
       tags: tags.size,
     };
   }, [tracks]);
+
+  const exportBasketTracks = useMemo(
+    () =>
+      exportBasketIds
+        .map((id) => tracks.find((record) => record.identity.id === id))
+        .filter((record): record is TrackRecord => Boolean(record)),
+    [exportBasketIds, tracks],
+  );
 
   useEffect(() => {
     void refreshTracks();
@@ -348,6 +364,60 @@ function App() {
       });
       setStatus(`Asset storage state changed to ${label(storageState)}.`);
       await refreshTracks();
+    } catch (caught) {
+      setError(formatError(caught));
+    }
+  }
+
+  function addToExportBasket(trackIdentityId: string) {
+    setExportBasketIds((current) =>
+      current.includes(trackIdentityId) ? current : [...current, trackIdentityId],
+    );
+  }
+
+  function addFilteredToExportBasket() {
+    setExportBasketIds((current) => {
+      const next = new Set(current);
+      for (const record of filteredTracks) {
+        next.add(record.identity.id);
+      }
+      return Array.from(next);
+    });
+  }
+
+  function removeFromExportBasket(trackIdentityId: string) {
+    setExportBasketIds((current) => current.filter((id) => id !== trackIdentityId));
+  }
+
+  async function exportBasketAsM3u() {
+    if (exportBasketIds.length === 0) {
+      setError("Export basket is empty.");
+      return;
+    }
+
+    try {
+      const destinationPath = await save({
+        title: "Export M3U playlist",
+        defaultPath: "music-os-playlist.m3u",
+        filters: [{ name: "M3U playlist", extensions: ["m3u"] }],
+      });
+      if (!destinationPath) {
+        return;
+      }
+      const result = await invoke<ExportM3uResult>("export_m3u_playlist", {
+        request: {
+          destination_path: destinationPath,
+          track_identity_ids: exportBasketIds,
+        },
+      });
+      setStatus(
+        `M3U exported: ${result.exported_tracks} tracks, ${result.skipped_tracks} skipped.`,
+      );
+      if (result.warnings.length > 0) {
+        setError(result.warnings.slice(0, 5).join(" | "));
+      } else {
+        setError(null);
+      }
     } catch (caught) {
       setError(formatError(caught));
     }
@@ -656,6 +726,19 @@ function App() {
           AND-based for now.
         </p>
 
+        <div className="basket-toolbar">
+          <button type="button" onClick={addFilteredToExportBasket}>
+            Add filtered to export basket
+          </button>
+          <button type="button" onClick={() => void exportBasketAsM3u()}>
+            Export basket as M3U
+          </button>
+          <button type="button" onClick={() => setExportBasketIds([])}>
+            Clear basket
+          </button>
+          <span>{exportBasketIds.length} tracks in basket</span>
+        </div>
+
         {tracks.length === 0 ? (
           <p className="empty">No tracks yet. Import a small test folder first.</p>
         ) : (
@@ -685,6 +768,15 @@ function App() {
                       ? `${record.identity.user_rating} stars`
                       : "unrated"}
                   </span>
+                  <span
+                    className={
+                      exportBasketIds.includes(record.identity.id)
+                        ? "basket-marker active"
+                        : "basket-marker"
+                    }
+                  >
+                    {exportBasketIds.includes(record.identity.id) ? "in basket" : "not queued"}
+                  </span>
                 </button>
               ))}
             </div>
@@ -697,6 +789,12 @@ function App() {
                     <h2>{selectedTrack.identity.title}</h2>
                     <p>{selectedTrack.identity.artist}</p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => addToExportBasket(selectedTrack.identity.id)}
+                  >
+                    Add to export basket
+                  </button>
                 </div>
 
                 <div className="detail-grid">
@@ -771,6 +869,27 @@ function App() {
                     ))}
                   </div>
                 </section>
+
+                {exportBasketTracks.length > 0 && (
+                  <section>
+                    <h3>Export basket</h3>
+                    <div className="basket-list">
+                      {exportBasketTracks.map((record) => (
+                        <article key={record.identity.id} className="basket-item">
+                          <span>
+                            <strong>{record.identity.artist}</strong> - {record.identity.title}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeFromExportBasket(record.identity.id)}
+                          >
+                            Remove
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                )}
               </section>
             )}
           </div>

@@ -223,6 +223,24 @@ Eminem - Stan.mp3
 Export naming is intentionally separate from import. Incorrect original names
 remain preserved as provenance, while exports can use clean canonical names.
 
+## Playlist handoff
+
+The MVP supports M3U playlist export as a lightweight bridge to external players.
+The GUI export basket collects TrackIdentities from filtered search results and
+the core writes an `#EXTM3U` file that points at the selected local vault-backed
+AudioAssets.
+
+M3U selection prefers:
+
+1. `best_verified_asset_id`
+2. `best_lossy_asset_id`
+3. `best_lossless_asset_id`
+4. `nostalgia_asset_id`
+5. first local vault-backed asset
+
+Tracks without a local playable vault path are skipped with warnings instead of
+causing destructive or implicit recovery behavior.
+
 ## Future extension points
 
 - Folder import and collection optimization workflows.

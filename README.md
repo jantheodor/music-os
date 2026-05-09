@@ -90,6 +90,8 @@ The MVP GUI is now useful for small test collections:
    state.
 7. Select a track to edit its global rating, replace current tags, or inspect
    AudioAssets.
+8. Add tracks or filtered results to the export basket and export an M3U
+   playlist for an external player.
 
 Start with copied test files, not your main collection. The import path remains
 non-destructive, but the product is still an MVP.

@@ -1,7 +1,7 @@
 use music_os_core::{
-    Archive, AudioAsset, ImportAudioRequest, ImportAudioResult, ImportFolderRequest,
-    ImportFolderResult, PlaybackMode, QualityPointerUpdate, RepresentationRole, StorageState,
-    TrackIdentity, TrackRecord,
+    Archive, AudioAsset, ExportM3uRequest, ExportM3uResult, ImportAudioRequest, ImportAudioResult,
+    ImportFolderRequest, ImportFolderResult, PlaybackMode, QualityPointerUpdate,
+    RepresentationRole, StorageState, TrackIdentity, TrackRecord,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -30,6 +30,12 @@ struct ImportMusicFolderCommand {
     root_path: PathBuf,
     user_rating: Option<i64>,
     semantic_tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportM3uCommand {
+    destination_path: PathBuf,
+    track_identity_ids: Vec<String>,
 }
 
 #[tauri::command]
@@ -159,6 +165,23 @@ fn select_playback_asset(
         .map_err(to_command_error)
 }
 
+#[tauri::command]
+fn export_m3u_playlist(
+    state: State<'_, MusicOsState>,
+    request: ExportM3uCommand,
+) -> Result<ExportM3uResult, String> {
+    let archive = state
+        .archive
+        .lock()
+        .map_err(|_| "archive lock poisoned".to_string())?;
+    archive
+        .export_m3u_playlist(ExportM3uRequest {
+            destination_path: request.destination_path,
+            track_identity_ids: request.track_identity_ids,
+        })
+        .map_err(to_command_error)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -179,6 +202,7 @@ pub fn run() {
             update_storage_state,
             update_quality_pointers,
             select_playback_asset,
+            export_m3u_playlist,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Music OS");

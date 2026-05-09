@@ -287,6 +287,20 @@ pub struct ImportFolderResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportM3uRequest {
+    pub destination_path: PathBuf,
+    pub track_identity_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportM3uResult {
+    pub destination_path: String,
+    pub exported_tracks: usize,
+    pub skipped_tracks: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTrackIdentityRequest {
     pub artist: String,
     pub title: String,
@@ -969,6 +983,74 @@ impl Archive {
         })
     }
 
+    pub fn export_m3u_playlist(&self, request: ExportM3uRequest) -> Result<ExportM3uResult> {
+        if request.track_identity_ids.is_empty() {
+            return Err(anyhow!("track_identity_ids must not be empty"));
+        }
+        if let Some(parent) = request.destination_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create playlist directory {}", parent.display())
+            })?;
+        }
+
+        let mut playlist = String::from("#EXTM3U\n");
+        let mut exported_tracks = 0;
+        let mut skipped_tracks = 0;
+        let mut warnings = Vec::new();
+
+        for track_identity_id in request.track_identity_ids {
+            let record = match self.get_track_record(&track_identity_id) {
+                Ok(record) => record,
+                Err(error) => {
+                    skipped_tracks += 1;
+                    warnings.push(format!("{track_identity_id}: {error}"));
+                    continue;
+                }
+            };
+
+            let Some(asset) = select_m3u_asset(&record) else {
+                skipped_tracks += 1;
+                warnings.push(format!(
+                    "{} - {}: no local playable vault asset",
+                    record.identity.artist, record.identity.title
+                ));
+                continue;
+            };
+            let Some(vault_path) = asset.vault_path.as_deref() else {
+                skipped_tracks += 1;
+                warnings.push(format!(
+                    "{} - {}: selected asset has no vault path",
+                    record.identity.artist, record.identity.title
+                ));
+                continue;
+            };
+
+            let duration_seconds = asset
+                .duration_ms
+                .map(|duration_ms| (duration_ms / 1000).max(0))
+                .unwrap_or(-1);
+            playlist.push_str(&format!(
+                "#EXTINF:{duration_seconds},{} - {}\n{}\n",
+                record.identity.artist, record.identity.title, vault_path
+            ));
+            exported_tracks += 1;
+        }
+
+        fs::write(&request.destination_path, playlist).with_context(|| {
+            format!(
+                "failed to write M3U playlist {}",
+                request.destination_path.display()
+            )
+        })?;
+
+        Ok(ExportM3uResult {
+            destination_path: request.destination_path.to_string_lossy().to_string(),
+            exported_tracks,
+            skipped_tracks,
+            warnings,
+        })
+    }
+
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(
             "
@@ -1448,6 +1530,26 @@ impl AudioAsset {
             Some("flac" | "wav" | "aiff" | "aif" | "alac")
         )
     }
+}
+
+fn select_m3u_asset(record: &TrackRecord) -> Option<&AudioAsset> {
+    let preferred_ids = [
+        record.identity.best_verified_asset_id.as_deref(),
+        record.identity.best_lossy_asset_id.as_deref(),
+        record.identity.best_lossless_asset_id.as_deref(),
+        record.identity.nostalgia_asset_id.as_deref(),
+    ];
+
+    preferred_ids
+        .into_iter()
+        .flatten()
+        .filter_map(|asset_id| record.assets.iter().find(|asset| asset.id == asset_id))
+        .find(|asset| asset.storage_state == StorageState::Local && asset.vault_path.is_some())
+        .or_else(|| {
+            record.assets.iter().find(|asset| {
+                asset.storage_state == StorageState::Local && asset.vault_path.is_some()
+            })
+        })
 }
 
 const AUDIO_ASSET_SELECT: &str = "SELECT id, track_identity_id, role, storage_state, vault_path,
@@ -2297,5 +2399,59 @@ mod tests {
             .tags
             .iter()
             .any(|tag| tag.normalized_label == "import-test")));
+    }
+
+    #[test]
+    fn m3u_export_writes_best_local_vault_paths_for_external_players() {
+        let (test_dir, archive) = archive();
+        let source_a = test_dir.path().join("Nena - 99 Luftballons.mp3");
+        let source_b = test_dir.path().join("Falco - Rock Me Amadeus.mp3");
+        fs::write(&source_a, b"nena").expect("source a");
+        fs::write(&source_b, b"falco").expect("source b");
+
+        let first = archive
+            .import_audio_file(ImportAudioRequest {
+                source_path: source_a,
+                track_identity_id: None,
+                title: None,
+                artist: None,
+                version: None,
+                role: None,
+                user_rating: Some(5),
+                semantic_tags: vec!["party".to_string()],
+                original_tags_json: None,
+            })
+            .expect("first import");
+        let second = archive
+            .import_audio_file(ImportAudioRequest {
+                source_path: source_b,
+                track_identity_id: None,
+                title: None,
+                artist: None,
+                version: None,
+                role: None,
+                user_rating: Some(4),
+                semantic_tags: vec!["party".to_string()],
+                original_tags_json: None,
+            })
+            .expect("second import");
+        let playlist_path = test_dir.path().join("party.m3u");
+
+        let result = archive
+            .export_m3u_playlist(ExportM3uRequest {
+                destination_path: playlist_path.clone(),
+                track_identity_ids: vec![first.track_identity.id, second.track_identity.id],
+            })
+            .expect("m3u export");
+
+        let playlist = fs::read_to_string(playlist_path).expect("playlist");
+        assert_eq!(result.exported_tracks, 2);
+        assert_eq!(result.skipped_tracks, 0);
+        assert!(playlist.starts_with("#EXTM3U"));
+        assert!(playlist.contains("Nena - 99 Luftballons"));
+        assert!(playlist.contains("Falco - Rock Me Amadeus"));
+        assert!(
+            playlist.contains("/vault/originals/") || playlist.contains("\\vault\\originals\\")
+        );
     }
 }
