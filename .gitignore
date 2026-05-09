@@ -2,7 +2,8 @@
 node_modules/
 
 # Build outputs
-dist/
+dist/*
+!dist/.gitkeep
 target/
 src-tauri/target/
 src-tauri/gen/
