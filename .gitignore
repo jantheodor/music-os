@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/*
+!dist/.gitkeep
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Local app data and logs
+.music-os/
+*.log
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/

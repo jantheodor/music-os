@@ -1,0 +1,11 @@
+[workspace]
+members = [
+  "crates/music-os-core",
+  "src-tauri"
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/music-os/music-os"
