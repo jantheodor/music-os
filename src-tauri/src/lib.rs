@@ -1,6 +1,6 @@
 use music_os_core::{
-    Archive, ArchiveState, ImportAudioRequest, ImportAudioResult, RepresentationRole, TrackRatings,
-    TrackRecord, TrackRepresentation,
+    Archive, AudioAsset, ImportAudioRequest, ImportAudioResult, PlaybackMode, QualityPointerUpdate,
+    RepresentationRole, StorageState, TrackIdentity, TrackRecord,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -14,14 +14,14 @@ struct MusicOsState {
 #[derive(Debug, Deserialize)]
 struct ImportMusicFileCommand {
     source_path: PathBuf,
-    track_id: Option<String>,
+    track_identity_id: Option<String>,
     title: Option<String>,
     artist: Option<String>,
-    album_title: Option<String>,
-    album_artist: Option<String>,
-    role: RepresentationRole,
-    music_rating: Option<i64>,
-    file_quality_rating: Option<i64>,
+    version: Option<String>,
+    role: Option<RepresentationRole>,
+    user_rating: Option<i64>,
+    semantic_tags: Vec<String>,
+    original_tags_json: Option<String>,
 }
 
 #[tauri::command]
@@ -45,98 +45,91 @@ fn import_music_file(
     archive
         .import_audio_file(ImportAudioRequest {
             source_path: request.source_path,
-            track_id: request.track_id,
+            track_identity_id: request.track_identity_id,
             title: request.title,
             artist: request.artist,
-            album_title: request.album_title,
-            album_artist: request.album_artist,
+            version: request.version,
             role: request.role,
-            music_rating: request.music_rating,
-            file_quality_rating: request.file_quality_rating,
+            user_rating: request.user_rating,
+            semantic_tags: request.semantic_tags,
+            original_tags_json: request.original_tags_json,
         })
         .map_err(to_command_error)
 }
 
 #[tauri::command]
-fn update_track_ratings(
+fn update_track_rating(
     state: State<'_, MusicOsState>,
-    track_id: String,
-    music_rating: Option<i64>,
-    file_quality_rating: Option<i64>,
-    notes: Option<String>,
-) -> Result<TrackRatings, String> {
+    track_identity_id: String,
+    user_rating: Option<i64>,
+) -> Result<TrackIdentity, String> {
     let archive = state
         .archive
         .lock()
         .map_err(|_| "archive lock poisoned".to_string())?;
     archive
-        .update_track_ratings(
-            &track_id,
-            music_rating,
-            file_quality_rating,
-            notes.as_deref(),
-        )
+        .update_track_rating(&track_identity_id, user_rating)
         .map_err(to_command_error)
 }
 
 #[tauri::command]
-fn set_track_archive_state(
+fn replace_track_tags(
     state: State<'_, MusicOsState>,
-    track_id: String,
-    archive_state: ArchiveState,
+    track_identity_id: String,
+    semantic_tags: Vec<String>,
 ) -> Result<TrackRecord, String> {
     let archive = state
         .archive
         .lock()
         .map_err(|_| "archive lock poisoned".to_string())?;
     archive
-        .set_track_archive_state(&track_id, archive_state)
-        .and_then(|_| {
-            archive
-                .list_tracks()?
-                .into_iter()
-                .find(|record| record.track.id == track_id)
-                .ok_or_else(|| anyhow::anyhow!("track not found after state update"))
-        })
+        .replace_track_tags(&track_identity_id, &semantic_tags)
+        .and_then(|_| archive.get_track_record(&track_identity_id))
         .map_err(to_command_error)
 }
 
 #[tauri::command]
-fn create_shadow_entry(
+fn update_storage_state(
     state: State<'_, MusicOsState>,
-    track_id: String,
-    label: Option<String>,
-    source_path: Option<String>,
-    fingerprint: Option<String>,
-    notes: Option<String>,
-) -> Result<TrackRepresentation, String> {
+    audio_asset_id: String,
+    storage_state: StorageState,
+) -> Result<AudioAsset, String> {
     let archive = state
         .archive
         .lock()
         .map_err(|_| "archive lock poisoned".to_string())?;
     archive
-        .create_shadow_entry(
-            &track_id,
-            label.as_deref(),
-            source_path.as_deref(),
-            fingerprint.as_deref(),
-            notes.as_deref(),
-        )
+        .update_storage_state(&audio_asset_id, storage_state)
         .map_err(to_command_error)
 }
 
 #[tauri::command]
-fn set_representation_role(
+fn update_quality_pointers(
     state: State<'_, MusicOsState>,
-    representation_id: String,
-    role: RepresentationRole,
-) -> Result<TrackRepresentation, String> {
+    track_identity_id: String,
+    update: QualityPointerUpdate,
+) -> Result<TrackIdentity, String> {
     let archive = state
         .archive
         .lock()
         .map_err(|_| "archive lock poisoned".to_string())?;
     archive
-        .set_representation_role(&representation_id, role)
+        .update_quality_pointers(&track_identity_id, update)
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+fn select_playback_asset(
+    state: State<'_, MusicOsState>,
+    track_identity_id: String,
+    mode: PlaybackMode,
+) -> Result<Option<AudioAsset>, String> {
+    let archive = state
+        .archive
+        .lock()
+        .map_err(|_| "archive lock poisoned".to_string())?;
+    archive
+        .select_playback_asset(&track_identity_id, mode)
         .map_err(to_command_error)
 }
 
@@ -153,10 +146,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_tracks,
             import_music_file,
-            update_track_ratings,
-            set_track_archive_state,
-            create_shadow_entry,
-            set_representation_role,
+            update_track_rating,
+            replace_track_tags,
+            update_storage_state,
+            update_quality_pointers,
+            select_playback_asset,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Music OS");

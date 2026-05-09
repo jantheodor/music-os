@@ -1,135 +1,88 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-type ArchiveState =
-  | "active"
-  | "recall"
-  | "shadow"
-  | "historical"
-  | "replaceable"
-  | "archived";
+type RepresentationRole = "first_found" | "nostalgia" | "variant";
+type StorageState = "local" | "external" | "shadow" | "missing";
 
-type RepresentationRole =
-  | "discovery"
-  | "nostalgia"
-  | "preferred_technical"
-  | "historical_variant"
-  | "shadow";
-
-interface Track {
+interface TrackIdentity {
   id: string;
-  canonical_title: string;
-  canonical_artist?: string | null;
-  archive_state: ArchiveState;
-  created_at: string;
-  updated_at: string;
-}
-
-interface TrackRatings {
-  track_id: string;
-  music_rating?: number | null;
-  file_quality_rating?: number | null;
-  notes?: string | null;
-  updated_at: string;
-}
-
-interface AlbumContext {
-  id: string;
+  artist: string;
   title: string;
-  album_artist?: string | null;
-  preservation_state: string;
+  version?: string | null;
+  user_rating?: number | null;
+  best_lossy_asset_id?: string | null;
+  best_lossless_asset_id?: string | null;
+  best_verified_asset_id?: string | null;
+  nostalgia_asset_id?: string | null;
 }
 
-interface TrackRepresentation {
+interface AudioAsset {
   id: string;
-  track_id: string;
-  file_id?: string | null;
+  track_identity_id: string;
   role: RepresentationRole;
-  label?: string | null;
-  source_path?: string | null;
-  is_available: boolean;
-  technical_score?: number | null;
-  quality_notes?: string | null;
-  created_at: string;
+  storage_state: StorageState;
+  vault_path?: string | null;
+  original_path?: string | null;
+  original_filename?: string | null;
+  checksum?: string | null;
+  audio_fingerprint?: string | null;
+  format?: string | null;
+  bitrate_kbps?: number | null;
+  sample_rate_hz?: number | null;
+  duration_ms?: number | null;
+  file_size?: number | null;
+  quality_score?: number | null;
+  true_lossless_verified: boolean;
+  suspected_transcode: boolean;
 }
 
-interface HistoryEvent {
+interface SemanticTag {
   id: string;
-  track_id: string;
-  representation_id?: string | null;
-  event_type: string;
-  summary: string;
-  payload_json?: string | null;
-  created_at: string;
+  label: string;
+  normalized_label: string;
 }
 
 interface TrackRecord {
-  track: Track;
-  ratings?: TrackRatings | null;
-  albums: AlbumContext[];
-  representations: TrackRepresentation[];
-  history: HistoryEvent[];
+  identity: TrackIdentity;
+  assets: AudioAsset[];
+  tags: SemanticTag[];
 }
 
 interface ImportForm {
   sourcePath: string;
   title: string;
   artist: string;
-  albumTitle: string;
-  albumArtist: string;
-  role: RepresentationRole;
-  musicRating: string;
-  fileQualityRating: string;
+  version: string;
+  role: "" | RepresentationRole;
+  userRating: string;
+  semanticTags: string;
 }
 
-const archiveStates: ArchiveState[] = [
-  "active",
-  "recall",
-  "shadow",
-  "historical",
-  "replaceable",
-  "archived",
-];
-
-const representationRoles: RepresentationRole[] = [
-  "discovery",
-  "nostalgia",
-  "preferred_technical",
-  "historical_variant",
-  "shadow",
-];
+const roles: RepresentationRole[] = ["first_found", "nostalgia", "variant"];
+const storageStates: StorageState[] = ["local", "external", "shadow", "missing"];
 
 const initialImportForm: ImportForm = {
   sourcePath: "",
   title: "",
   artist: "",
-  albumTitle: "",
-  albumArtist: "",
-  role: "discovery",
-  musicRating: "",
-  fileQualityRating: "",
+  version: "",
+  role: "",
+  userRating: "",
+  semanticTags: "",
 };
 
 function App() {
   const [tracks, setTracks] = useState<TrackRecord[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [importForm, setImportForm] = useState<ImportForm>(initialImportForm);
-  const [ratingDraft, setRatingDraft] = useState({
-    musicRating: "",
-    fileQualityRating: "",
-    notes: "",
-  });
-  const [shadowDraft, setShadowDraft] = useState({
-    label: "",
-    sourcePath: "",
-    fingerprint: "",
-    notes: "",
-  });
-  const [status, setStatus] = useState("Ready to preserve, not overwrite.");
+  const [ratingDraft, setRatingDraft] = useState("");
+  const [tagDraft, setTagDraft] = useState("");
+  const [status, setStatus] = useState("Ready to preserve, optimize, and find music.");
   const [error, setError] = useState<string | null>(null);
 
   const selectedTrack = useMemo(
-    () => tracks.find((record) => record.track.id === selectedTrackId) ?? tracks[0],
+    () =>
+      tracks.find((record) => record.identity.id === selectedTrackId) ?? tracks[0],
     [selectedTrackId, tracks],
   );
 
@@ -141,18 +94,15 @@ function App() {
     if (!selectedTrack) {
       return;
     }
-    setRatingDraft({
-      musicRating: selectedTrack.ratings?.music_rating?.toString() ?? "",
-      fileQualityRating: selectedTrack.ratings?.file_quality_rating?.toString() ?? "",
-      notes: selectedTrack.ratings?.notes ?? "",
-    });
-  }, [selectedTrack?.track.id]);
+    setRatingDraft(selectedTrack.identity.user_rating?.toString() ?? "");
+    setTagDraft(selectedTrack.tags.map((tag) => `#${tag.normalized_label}`).join(" "));
+  }, [selectedTrack?.identity.id]);
 
   async function refreshTracks() {
     try {
       const records = await invoke<TrackRecord[]>("list_tracks");
       setTracks(records);
-      setSelectedTrackId((current) => current ?? records[0]?.track.id ?? null);
+      setSelectedTrackId((current) => current ?? records[0]?.identity.id ?? null);
       setError(null);
     } catch (caught) {
       setError(formatError(caught));
@@ -161,23 +111,24 @@ function App() {
 
   async function importTrack(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setStatus("Importing into checksum vault...");
+    setStatus("Importing into checksum vault and extracting filename tags...");
     setError(null);
     try {
       await invoke("import_music_file", {
         request: {
           source_path: importForm.sourcePath,
+          track_identity_id: null,
           title: optional(importForm.title),
           artist: optional(importForm.artist),
-          album_title: optional(importForm.albumTitle),
-          album_artist: optional(importForm.albumArtist),
-          role: importForm.role,
-          music_rating: optionalNumber(importForm.musicRating),
-          file_quality_rating: optionalNumber(importForm.fileQualityRating),
+          version: optional(importForm.version),
+          role: importForm.role || null,
+          user_rating: optionalNumber(importForm.userRating),
+          semantic_tags: splitTags(importForm.semanticTags),
+          original_tags_json: null,
         },
       });
       setImportForm(initialImportForm);
-      setStatus("Import complete. Source file was left untouched.");
+      setStatus("Import complete. Source bytes were preserved and hashtags became tags.");
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
@@ -185,72 +136,47 @@ function App() {
     }
   }
 
-  async function updateRatings(event: React.FormEvent<HTMLFormElement>) {
+  async function updateRating(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedTrack) {
       return;
     }
     try {
-      await invoke("update_track_ratings", {
-        trackId: selectedTrack.track.id,
-        musicRating: optionalNumber(ratingDraft.musicRating),
-        fileQualityRating: optionalNumber(ratingDraft.fileQualityRating),
-        notes: optional(ratingDraft.notes),
+      await invoke("update_track_rating", {
+        trackIdentityId: selectedTrack.identity.id,
+        userRating: optionalNumber(ratingDraft),
       });
-      setStatus("Ratings updated as separate music and file-quality signals.");
+      setStatus("Global track rating updated.");
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
     }
   }
 
-  async function updateArchiveState(archiveState: ArchiveState) {
-    if (!selectedTrack) {
-      return;
-    }
-    try {
-      await invoke("set_track_archive_state", {
-        trackId: selectedTrack.track.id,
-        archiveState,
-      });
-      setStatus(`Track moved to ${label(archiveState)}.`);
-      await refreshTracks();
-    } catch (caught) {
-      setError(formatError(caught));
-    }
-  }
-
-  async function createShadowEntry(event: React.FormEvent<HTMLFormElement>) {
+  async function replaceTags(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedTrack) {
       return;
     }
     try {
-      await invoke("create_shadow_entry", {
-        trackId: selectedTrack.track.id,
-        label: optional(shadowDraft.label),
-        sourcePath: optional(shadowDraft.sourcePath),
-        fingerprint: optional(shadowDraft.fingerprint),
-        notes: optional(shadowDraft.notes),
+      await invoke("replace_track_tags", {
+        trackIdentityId: selectedTrack.identity.id,
+        semanticTags: splitTags(tagDraft),
       });
-      setShadowDraft({ label: "", sourcePath: "", fingerprint: "", notes: "" });
-      setStatus("Shadow entry created without requiring local audio.");
+      setStatus("Current track tags updated.");
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
     }
   }
 
-  async function updateRepresentationRole(
-    representationId: string,
-    role: RepresentationRole,
-  ) {
+  async function updateStorageState(assetId: string, storageState: StorageState) {
     try {
-      await invoke("set_representation_role", {
-        representationId,
-        role,
+      await invoke("update_storage_state", {
+        audioAssetId: assetId,
+        storageState,
       });
-      setStatus(`Representation marked as ${label(role)}.`);
+      setStatus(`Asset storage state changed to ${label(storageState)}.`);
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
@@ -261,17 +187,17 @@ function App() {
     <main className="shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">Open, local-first music archive</p>
+          <p className="eyebrow">Local-first collection optimizer</p>
           <h1>Music OS</h1>
           <p>
-            A non-destructive library manager for music as artifacts, memories,
-            variants, album contexts, and histories.
+            Track identities hold ratings and semantic tags. Audio assets hold
+            concrete files, storage state, quality facts, and personal roles.
           </p>
         </div>
         <div className="principles">
-          <span>Original files are sacred</span>
-          <span>Tracks are entities, not files</span>
-          <span>History is narrative, not clutter</span>
+          <span>Original bytes stay sacred</span>
+          <span>Best versions are pointers</span>
+          <span>Tags are current search labels</span>
         </div>
       </section>
 
@@ -282,10 +208,11 @@ function App() {
 
       <div className="grid">
         <section className="card">
-          <h2>Import into Vault</h2>
+          <h2>Import folder/file candidate</h2>
           <p className="muted">
-            Import copies bytes into immutable checksum storage and records the
-            original path. No source file edits or destructive normalization occur.
+            Filename suffixes like <code>#2020 #house #party</code> are extracted
+            into TrackIdentity tags while the original filename remains preserved
+            on the AudioAsset.
           </p>
           <form className="stack" onSubmit={importTrack}>
             <label>
@@ -296,20 +223,10 @@ function App() {
                 onChange={(event) =>
                   setImportForm({ ...importForm, sourcePath: event.target.value })
                 }
-                placeholder="/home/me/Music/Artist - Song.flac"
+                placeholder="/music/Eminem - Stan #2000 #herzschmerz.mp3"
               />
             </label>
             <div className="two-column">
-              <label>
-                Title
-                <input
-                  value={importForm.title}
-                  onChange={(event) =>
-                    setImportForm({ ...importForm, title: event.target.value })
-                  }
-                  placeholder="Infer from filename"
-                />
-              </label>
               <label>
                 Artist
                 <input
@@ -320,41 +237,41 @@ function App() {
                   placeholder="Infer from filename"
                 />
               </label>
-            </div>
-            <div className="two-column">
               <label>
-                Album
+                Title
                 <input
-                  value={importForm.albumTitle}
+                  value={importForm.title}
                   onChange={(event) =>
-                    setImportForm({ ...importForm, albumTitle: event.target.value })
+                    setImportForm({ ...importForm, title: event.target.value })
                   }
-                  placeholder="Optional album context"
-                />
-              </label>
-              <label>
-                Album artist
-                <input
-                  value={importForm.albumArtist}
-                  onChange={(event) =>
-                    setImportForm({ ...importForm, albumArtist: event.target.value })
-                  }
+                  placeholder="Infer from filename"
                 />
               </label>
             </div>
             <div className="three-column">
               <label>
-                Representation
+                Version
+                <input
+                  value={importForm.version}
+                  onChange={(event) =>
+                    setImportForm({ ...importForm, version: event.target.value })
+                  }
+                  placeholder="Radio edit, live, remaster..."
+                />
+              </label>
+              <label>
+                Role
                 <select
                   value={importForm.role}
                   onChange={(event) =>
                     setImportForm({
                       ...importForm,
-                      role: event.target.value as RepresentationRole,
+                      role: event.target.value as "" | RepresentationRole,
                     })
                   }
                 >
-                  {representationRoles.map((role) => (
+                  <option value="">Auto</option>
+                  {roles.map((role) => (
                     <option key={role} value={role}>
                       {label(role)}
                     </option>
@@ -362,63 +279,57 @@ function App() {
                 </select>
               </label>
               <label>
-                Music rating
+                Rating
                 <input
                   type="number"
-                  min="0"
+                  min="1"
                   max="5"
-                  value={importForm.musicRating}
+                  value={importForm.userRating}
                   onChange={(event) =>
-                    setImportForm({ ...importForm, musicRating: event.target.value })
-                  }
-                />
-              </label>
-              <label>
-                File quality
-                <input
-                  type="number"
-                  min="0"
-                  max="5"
-                  value={importForm.fileQualityRating}
-                  onChange={(event) =>
-                    setImportForm({
-                      ...importForm,
-                      fileQualityRating: event.target.value,
-                    })
+                    setImportForm({ ...importForm, userRating: event.target.value })
                   }
                 />
               </label>
             </div>
-            <button type="submit">Import without destructive changes</button>
+            <label>
+              Additional tags
+              <input
+                value={importForm.semanticTags}
+                onChange={(event) =>
+                  setImportForm({ ...importForm, semanticTags: event.target.value })
+                }
+                placeholder="#party #deutsch #bass"
+              />
+            </label>
+            <button type="submit">Import non-destructively</button>
           </form>
         </section>
 
         <section className="card">
-          <h2>Library</h2>
+          <h2>Track identities</h2>
           {tracks.length === 0 ? (
-            <p className="empty">
-              No tracks yet. Import a local audio file path to create the first
-              entity and vault representation.
-            </p>
+            <p className="empty">No tracks yet.</p>
           ) : (
             <div className="track-list">
               {tracks.map((record) => (
                 <button
                   className={
-                    record.track.id === selectedTrack?.track.id
+                    record.identity.id === selectedTrack?.identity.id
                       ? "track-row selected"
                       : "track-row"
                   }
-                  key={record.track.id}
+                  key={record.identity.id}
                   type="button"
-                  onClick={() => setSelectedTrackId(record.track.id)}
+                  onClick={() => setSelectedTrackId(record.identity.id)}
                 >
                   <span>
-                    <strong>{record.track.canonical_title}</strong>
-                    <small>{record.track.canonical_artist ?? "Unknown artist"}</small>
+                    <strong>{record.identity.title}</strong>
+                    <small>{record.identity.artist}</small>
                   </span>
-                  <span className={`state ${record.track.archive_state}`}>
-                    {label(record.track.archive_state)}
+                  <span className="state">
+                    {record.identity.user_rating
+                      ? `${record.identity.user_rating} stars`
+                      : "unrated"}
                   </span>
                 </button>
               ))}
@@ -431,195 +342,88 @@ function App() {
         <section className="detail card">
           <div className="detail-header">
             <div>
-              <p className="eyebrow">Track entity</p>
-              <h2>{selectedTrack.track.canonical_title}</h2>
-              <p>{selectedTrack.track.canonical_artist ?? "Unknown artist"}</p>
+              <p className="eyebrow">TrackIdentity</p>
+              <h2>{selectedTrack.identity.title}</h2>
+              <p>
+                {selectedTrack.identity.artist}
+                {selectedTrack.identity.version
+                  ? ` - ${selectedTrack.identity.version}`
+                  : ""}
+              </p>
             </div>
-            <label>
-              Recall state
-              <select
-                value={selectedTrack.track.archive_state}
-                onChange={(event) =>
-                  void updateArchiveState(event.target.value as ArchiveState)
-                }
-              >
-                {archiveStates.map((state) => (
-                  <option key={state} value={state}>
-                    {label(state)}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
 
           <div className="detail-grid">
             <section>
-              <h3>Ratings</h3>
-              <form className="stack" onSubmit={updateRatings}>
-                <div className="two-column">
-                  <label>
-                    Music appreciation
-                    <input
-                      type="number"
-                      min="0"
-                      max="5"
-                      value={ratingDraft.musicRating}
-                      onChange={(event) =>
-                        setRatingDraft({
-                          ...ratingDraft,
-                          musicRating: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    File quality
-                    <input
-                      type="number"
-                      min="0"
-                      max="5"
-                      value={ratingDraft.fileQualityRating}
-                      onChange={(event) =>
-                        setRatingDraft({
-                          ...ratingDraft,
-                          fileQualityRating: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                </div>
+              <h3>Global rating</h3>
+              <form className="stack" onSubmit={updateRating}>
                 <label>
-                  Notes
-                  <textarea
-                    value={ratingDraft.notes}
-                    onChange={(event) =>
-                      setRatingDraft({ ...ratingDraft, notes: event.target.value })
-                    }
-                    placeholder="Great song, poor rip; keep memory, seek better copy."
+                  User rating, 1-5 stars
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    value={ratingDraft}
+                    onChange={(event) => setRatingDraft(event.target.value)}
                   />
                 </label>
-                <button type="submit">Save ratings</button>
+                <button type="submit">Save rating</button>
               </form>
             </section>
 
             <section>
-              <h3>Album context</h3>
-              {selectedTrack.albums.length === 0 ? (
-                <p className="empty">No album context recorded yet.</p>
-              ) : (
-                <ul className="pill-list">
-                  {selectedTrack.albums.map((album) => (
-                    <li key={album.id}>
-                      {album.title}
-                      {album.album_artist ? ` by ${album.album_artist}` : ""}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-
-          <div className="detail-grid">
-            <section>
-              <h3>Representations</h3>
-              <div className="representation-list">
-                {selectedTrack.representations.map((representation) => (
-                  <article key={representation.id} className="representation">
-                    <div>
-                      <strong>{label(representation.role)}</strong>
-                      <p>
-                        {representation.is_available
-                          ? "Local vault-backed audio"
-                          : "Shadow-only memory"}
-                      </p>
-                      {representation.source_path && (
-                        <small>{representation.source_path}</small>
-                      )}
-                    </div>
-                    <select
-                      value={representation.role}
-                      onChange={(event) =>
-                        void updateRepresentationRole(
-                          representation.id,
-                          event.target.value as RepresentationRole,
-                        )
-                      }
-                    >
-                      {representationRoles.map((role) => (
-                        <option key={role} value={role}>
-                          {label(role)}
-                        </option>
-                      ))}
-                    </select>
-                  </article>
+              <h3>Semantic tags</h3>
+              <form className="stack" onSubmit={replaceTags}>
+                <label>
+                  Current tags
+                  <input
+                    value={tagDraft}
+                    onChange={(event) => setTagDraft(event.target.value)}
+                    placeholder="#party #80s #deutsch"
+                  />
+                </label>
+                <button type="submit">Replace current tags</button>
+              </form>
+              <ul className="pill-list">
+                {selectedTrack.tags.map((tag) => (
+                  <li key={tag.id}>#{tag.normalized_label}</li>
                 ))}
-              </div>
-            </section>
-
-            <section>
-              <h3>Create shadow entry</h3>
-              <form className="stack" onSubmit={createShadowEntry}>
-                <label>
-                  Label
-                  <input
-                    value={shadowDraft.label}
-                    onChange={(event) =>
-                      setShadowDraft({ ...shadowDraft, label: event.target.value })
-                    }
-                    placeholder="Old iPod copy"
-                  />
-                </label>
-                <label>
-                  Remembered path or source
-                  <input
-                    value={shadowDraft.sourcePath}
-                    onChange={(event) =>
-                      setShadowDraft({
-                        ...shadowDraft,
-                        sourcePath: event.target.value,
-                      })
-                    }
-                    placeholder="/Volumes/old-drive/song.mp3"
-                  />
-                </label>
-                <label>
-                  Fingerprint
-                  <input
-                    value={shadowDraft.fingerprint}
-                    onChange={(event) =>
-                      setShadowDraft({
-                        ...shadowDraft,
-                        fingerprint: event.target.value,
-                      })
-                    }
-                    placeholder="Future acoustic fingerprint"
-                  />
-                </label>
-                <label>
-                  Notes
-                  <textarea
-                    value={shadowDraft.notes}
-                    onChange={(event) =>
-                      setShadowDraft({ ...shadowDraft, notes: event.target.value })
-                    }
-                  />
-                </label>
-                <button type="submit">Preserve shadow memory</button>
-              </form>
+              </ul>
             </section>
           </div>
 
           <section>
-            <h3>History</h3>
-            <ol className="timeline">
-              {selectedTrack.history.map((event) => (
-                <li key={event.id}>
-                  <span>{formatTimestamp(event.created_at)}</span>
-                  <strong>{label(event.event_type)}</strong>
-                  <p>{event.summary}</p>
-                </li>
+            <h3>Audio assets</h3>
+            <div className="representation-list">
+              {selectedTrack.assets.map((asset) => (
+                <article key={asset.id} className="representation">
+                  <div>
+                    <strong>{label(asset.role)}</strong>
+                    <p>
+                      {asset.format?.toUpperCase() ?? "Unknown format"}
+                      {asset.true_lossless_verified ? " - verified lossless" : ""}
+                      {asset.suspected_transcode ? " - suspected transcode" : ""}
+                    </p>
+                    {asset.original_filename && <small>{asset.original_filename}</small>}
+                  </div>
+                  <select
+                    value={asset.storage_state}
+                    onChange={(event) =>
+                      void updateStorageState(
+                        asset.id,
+                        event.target.value as StorageState,
+                      )
+                    }
+                  >
+                    {storageStates.map((state) => (
+                      <option key={state} value={state}>
+                        {label(state)}
+                      </option>
+                    ))}
+                  </select>
+                </article>
               ))}
-            </ol>
+            </div>
           </section>
         </section>
       )}
@@ -637,13 +441,15 @@ function optionalNumber(value: string) {
   return trimmed.length > 0 ? Number(trimmed) : null;
 }
 
-function label(value: string) {
-  return value.replace(/_/g, " ");
+function splitTags(value: string) {
+  return value
+    .split(/\s+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 }
 
-function formatTimestamp(value: string) {
-  const millis = Number(value);
-  return Number.isFinite(millis) ? new Date(millis).toLocaleString() : value;
+function label(value: string) {
+  return value.replace(/_/g, " ");
 }
 
 function formatError(caught: unknown) {

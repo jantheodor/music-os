@@ -5,65 +5,134 @@
 Music OS separates three concerns:
 
 1. **Archive core (`crates/music-os-core`)**
-   - Owns SQLite schema, archive invariants, checksum vault paths, ratings,
-     track states, representations, album context, and history.
+   - Owns SQLite schema, archive invariants, checksum vault paths, track
+     identities, audio assets, storage state, quality pointers, ratings, and
+     semantic tags.
    - Contains no UI or Tauri runtime dependency.
 2. **Desktop adapter (`src-tauri`)**
    - Resolves the application data directory.
    - Opens the archive database and vault.
    - Exposes narrow commands to the frontend.
 3. **Frontend (`src`)**
-   - Provides an MVP workflow surface for importing, rating, state transitions,
-     shadow entries, representations, and history review.
+   - Provides an MVP workflow surface for importing, rating, tagging, storage
+     state review, and asset inspection.
 
 ## Data model
 
-### `vault_files`
+### `track_identities`
 
-Stores copied original audio bytes by SHA256 and size. The source path is
-recorded as provenance. Rows are never used as direct track identity.
+Represents the abstract song identity. A TrackIdentity is not a file. It owns:
 
-### `tracks`
+- canonical artist/title/version identity
+- one global user rating, 1-5 stars
+- semantic user tags through `track_identity_tags`
+- pointers to preferred assets:
+  - `best_lossy_asset_id`
+  - `best_lossless_asset_id`
+  - `best_verified_asset_id`
+  - `nostalgia_asset_id`
 
-Represents the conceptual musical item. A track has an archive state such as
-`active`, `recall`, `shadow`, `historical`, `replaceable`, or `archived`.
+Ratings apply globally across every asset, placeholder, and context attached to
+the track identity. Music OS may later write ratings back to materialized files
+only through explicit user opt-in or export/materialization workflows, never
+silently to sacred vault originals.
 
-### `track_representations`
+### `audio_assets`
 
-Connects a track to one available vault file or to a shadow-only memory.
-Representation roles include:
+Represents one concrete audio file or a former/known audio file. It owns:
 
-- `discovery`
-- `nostalgia`
-- `preferred_technical`
-- `historical_variant`
-- `shadow`
+- vault path if locally materialized
+- original path and original filename as provenance
+- checksum and optional audio fingerprint
+- format, bitrate, sample rate, duration, and file size
+- quality facts such as LUFS/DR/peak/quality score when available
+- original tags read from the file as JSON when available
+- role and storage state
 
-### `track_ratings`
+`storage_state` answers whether the actual audio is available:
 
-Stores music appreciation and file quality separately, allowing cases like
-"5/5 song, poor file" to inform recall and replacement workflows.
+- `local`: audio file is present in the vault
+- `external`: known but not currently local
+- `shadow`: only metadata/fingerprint/context remain; not currently playable as
+  that exact file
+- `missing`: expected file cannot be found unexpectedly
 
-### `albums` and `album_tracks`
+### Representation roles
 
-Preserve album and compilation context independently from current track
-preference.
+Roles describe why an asset matters historically or personally. They are not
+quality labels and not album/compilation flags.
 
-### `history_events`
+Allowed roles:
 
-Records meaningful archive milestones: track creation, imports, album context,
-rating changes, state changes, representation role changes, and shadow entries.
+- `first_found`: first known/found version of the TrackIdentity in Music OS
+- `nostalgia`: consciously kept emotional/reference version
+- `variant`: ordinary alternative version
+
+The core assigns `first_found` only once by default. Later assets default to
+`variant` unless explicitly marked as `nostalgia`.
+
+### Quality/preference pointers
+
+Best versions are pointers from TrackIdentity, not roles.
+
+- `best_lossy_asset_id`: best verified lossy/portable version
+- `best_lossless_asset_id`: best verified true lossless version
+- `best_verified_asset_id`: default playback source, chosen by actual quality
+- `nostalgia_asset_id`: optional direct pointer for nostalgia playback
+
+Lossless is not automatically best. A fake FLAC sourced from a bad MP3 should
+not become `best_verified_asset_id` merely because its container is lossless.
+
+Playback selection:
+
+- Default mode uses `best_verified_asset_id`.
+- Portable/compatibility mode uses `best_lossy_asset_id`.
+- Nostalgia mode uses `nostalgia_asset_id`, falling back to an asset with role
+  `nostalgia` when available.
+
+### `semantic_tags` and `track_identity_tags`
+
+Tags are current search/filter labels on TrackIdentity, not historical events.
+They intentionally do not track transitions like "#herzschmerz was replaced by
+#wut". The current tag set is what matters for finding music later.
+
+Examples:
+
+- `#deep-house`
+- `#herzschmerz`
+- `#deutsch`
+- `#2023`
+- `#party`
 
 ## Non-destructive import
 
 The core import path:
 
 1. Reads the source file and calculates SHA256.
-2. Chooses `vault/originals/<sha-prefix>/<sha>.<ext>`.
-3. Copies bytes with create-new semantics.
-4. Reuses an existing vault row for duplicate bytes.
-5. Creates or reuses a track entity.
-6. Adds a representation and history events.
+2. Extracts trailing filename hashtags into TrackIdentity tags.
+3. Uses the cleaned filename stem for artist/title inference.
+4. Chooses `vault/originals/<sha-prefix>/<sha>.<ext>`.
+5. Copies bytes with create-new semantics.
+6. Creates or reuses a TrackIdentity.
+7. Registers an AudioAsset with local storage state.
+
+Example:
+
+```text
+Eminem - Stan #2000 #hip-hop #herzschmerz.mp3
+```
+
+becomes:
+
+```text
+TrackIdentity:
+  artist = Eminem
+  title = Stan
+  tags = #2000, #hip-hop, #herzschmerz
+
+AudioAsset:
+  original_filename = Eminem - Stan #2000 #hip-hop #herzschmerz.mp3
+```
 
 The import path does not modify, rename, normalize, retag, or delete the source
 file.
@@ -95,8 +164,9 @@ remain preserved as provenance, while exports can use clean canonical names.
 
 ## Future extension points
 
+- Folder import and collection optimization workflows.
 - Acoustic fingerprinting and loudness metadata tables.
 - Export manifests that reconstruct ordinary folders from track/album state.
+- Search/filter UI for tags, ratings, formats, and storage state.
+- Optional explicit write-back/export of ratings and tags to materialized files.
 - Relationship clustering for redundant variants.
-- Playback profile metadata for Original, Album Respect, Party, Car, Night,
-  and Smart Normalize modes.

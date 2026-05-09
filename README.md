@@ -1,19 +1,22 @@
 # Music OS
 
-Music OS is an open-source, local-first desktop archive for music collections.
-It is not a traditional music player. The first priority is preserving original
-audio files, memories, metadata, ratings, album context, and history without
-forcing binary keep/delete decisions.
+Music OS is an open-source, local-first collection optimizer for large local,
+NAS, and external-drive music libraries. It is not a traditional music player.
+The first priority is preserving original audio files while helping users find,
+rate, tag, compare, and eventually reduce redundant storage safely.
 
 ## Founding principles
 
 - Original files are sacred: imports copy bytes into vault storage and never
   rewrite source files.
-- A track is not a file: one track entity can have discovery, nostalgia,
-  preferred technical, historical, and shadow representations.
-- Ratings are first-class and split music appreciation from file quality.
-- Recall is a workflow, not deletion: tracks can move through active, recall,
-  shadow, historical, replaceable, and archived states.
+- A TrackIdentity is not a file: it holds artist/title/version identity, one
+  global user rating, semantic tags, and preferred-asset pointers.
+- An AudioAsset is one concrete audio file or former audio file: it holds vault
+  path, checksums, technical facts, original tags, role, and storage state.
+- Roles explain why an asset matters: `first_found`, `nostalgia`, or `variant`.
+- Best versions are pointers, not roles: lossy, lossless, verified, and
+  nostalgia assets can differ.
+- Tags are current search/filter labels, not historical events.
 - Albums and compilations are entities so context can survive changing taste.
 - Loudness is metadata and playback policy; normalization must be dynamic and
   non-destructive.
@@ -32,14 +35,15 @@ can be tested without the desktop runtime.
 ## Current MVP capabilities
 
 - Import a local music file path into checksum-addressed vault storage.
-- Create track entities independently from files.
-- Store multiple file representations per track.
-- Mark discovery, nostalgia, preferred technical, historical, and shadow roles.
-- Assign separate music and file quality ratings.
-- Move tracks through recall/archive states.
-- Preserve album context.
-- Create shadow entries without local audio availability.
-- Show track history as a narrative event stream.
+- Create TrackIdentity records independently from AudioAssets.
+- Extract trailing filename hashtags such as `#2020 #house #party` into
+  TrackIdentity semantic tags while preserving the original filename.
+- Store multiple AudioAssets per TrackIdentity with `first_found`, `nostalgia`,
+  or `variant` roles.
+- Track storage state as `local`, `external`, `shadow`, or `missing`.
+- Assign one global 1-5 star TrackIdentity rating.
+- Maintain preferred-asset pointers for best lossy, best verified lossless,
+  best verified playback, and nostalgia playback.
 
 ## Development
 
