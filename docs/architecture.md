@@ -31,6 +31,7 @@ Represents the abstract song identity. A TrackIdentity is not a file. It owns:
   - `best_lossless_asset_id`
   - `best_verified_asset_id`
   - `nostalgia_asset_id`
+- optional `preferred_cover_asset_id`
 
 Ratings apply globally across every asset, placeholder, and context attached to
 the track identity. Music OS may later write ratings back to materialized files
@@ -134,6 +135,35 @@ Examples:
 - `#deutsch`
 - `#2023`
 - `#party`
+
+### `cover_assets` and `cover_relationships`
+
+Artwork is first-class media, not disposable audio-file metadata. CoverAsset
+stores image identity and storage facts independently from audio:
+
+- image checksum
+- vault path when locally stored
+- MIME type
+- dimensions
+- file size
+- source/origin
+- storage state: `local`, `external`, `shadow`, or `missing`
+
+Many albums embed the same cover image into every track file. Music OS stores
+identical artwork once when possible and references it many times.
+
+Cover relationships are explicit and separate from audio roles:
+
+- `embedded_original_cover`: artwork originally embedded in an AudioAsset
+- `release_cover`: artwork for a release/album entity
+- `collection_cover`: artwork for a collection or playlist
+- `track_artwork`: optional track-specific artwork on TrackIdentity
+
+TrackIdentity can also point to `preferred_cover_asset_id`. During export or
+materialization, Music OS may re-embed appropriate artwork for ordinary-player
+compatibility, or allow lightweight exports without embedded artwork. This is an
+export/materialization behavior and does not require storing duplicate images in
+the archive.
 
 ## Non-destructive import
 

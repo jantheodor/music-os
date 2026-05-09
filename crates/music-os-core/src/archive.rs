@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
@@ -102,6 +102,7 @@ pub struct TrackIdentity {
     pub best_lossless_asset_id: Option<String>,
     pub best_verified_asset_id: Option<String>,
     pub nostalgia_asset_id: Option<String>,
+    pub preferred_cover_asset_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -141,6 +142,99 @@ pub struct SemanticTag {
     pub id: String,
     pub label: String,
     pub normalized_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverAsset {
+    pub id: String,
+    pub storage_state: StorageState,
+    pub vault_path: Option<String>,
+    pub checksum: Option<String>,
+    pub mime_type: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub file_size: Option<i64>,
+    pub source: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverRelationshipType {
+    EmbeddedOriginalCover,
+    ReleaseCover,
+    CollectionCover,
+    TrackArtwork,
+}
+
+impl CoverRelationshipType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::EmbeddedOriginalCover => "embedded_original_cover",
+            Self::ReleaseCover => "release_cover",
+            Self::CollectionCover => "collection_cover",
+            Self::TrackArtwork => "track_artwork",
+        }
+    }
+}
+
+impl TryFrom<&str> for CoverRelationshipType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value {
+            "embedded_original_cover" => Ok(Self::EmbeddedOriginalCover),
+            "release_cover" => Ok(Self::ReleaseCover),
+            "collection_cover" => Ok(Self::CollectionCover),
+            "track_artwork" => Ok(Self::TrackArtwork),
+            other => Err(anyhow!("unknown cover relationship type: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverTargetType {
+    TrackIdentity,
+    AudioAsset,
+    Release,
+    Collection,
+}
+
+impl CoverTargetType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TrackIdentity => "track_identity",
+            Self::AudioAsset => "audio_asset",
+            Self::Release => "release",
+            Self::Collection => "collection",
+        }
+    }
+}
+
+impl TryFrom<&str> for CoverTargetType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value {
+            "track_identity" => Ok(Self::TrackIdentity),
+            "audio_asset" => Ok(Self::AudioAsset),
+            "release" => Ok(Self::Release),
+            "collection" => Ok(Self::Collection),
+            other => Err(anyhow!("unknown cover target type: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverRelationship {
+    pub id: String,
+    pub cover_asset_id: String,
+    pub target_type: CoverTargetType,
+    pub target_id: String,
+    pub relationship_type: CoverRelationshipType,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +309,29 @@ pub struct QualityPointerUpdate {
     pub nostalgia_asset_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportCoverAssetRequest {
+    pub source_path: PathBuf,
+    pub mime_type: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportCoverAssetResult {
+    pub cover_asset: CoverAsset,
+    pub was_already_in_vault: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverRelationshipRequest {
+    pub cover_asset_id: String,
+    pub target_type: CoverTargetType,
+    pub target_id: String,
+    pub relationship_type: CoverRelationshipType,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FilenameInterpretation {
     artist: Option<String>,
@@ -264,8 +381,8 @@ impl Archive {
         let now = now();
         self.conn.execute(
             "INSERT INTO track_identities
-                (id, artist, title, version, user_rating, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                (id, artist, title, version, user_rating, preferred_cover_asset_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?6)",
             params![id, artist, title, request.version, request.user_rating, now],
         )?;
         self.add_track_tags(&id, &request.semantic_tags)?;
@@ -427,11 +544,144 @@ impl Archive {
         Ok(asset)
     }
 
+    pub fn import_cover_asset(
+        &self,
+        request: ImportCoverAssetRequest,
+    ) -> Result<ImportCoverAssetResult> {
+        let metadata = fs::metadata(&request.source_path).with_context(|| {
+            format!(
+                "failed to read cover source metadata {}",
+                request.source_path.display()
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(anyhow!(
+                "cover source path is not a file: {}",
+                request.source_path.display()
+            ));
+        }
+
+        let (checksum, file_size) = checksum_file(&request.source_path)?;
+        if let Some(cover_asset) = self.find_cover_asset(&checksum, file_size)? {
+            return Ok(ImportCoverAssetResult {
+                cover_asset,
+                was_already_in_vault: true,
+            });
+        }
+
+        let mime_type = request
+            .mime_type
+            .or_else(|| infer_image_mime_type(&request.source_path));
+        let extension = image_extension(mime_type.as_deref(), &request.source_path);
+        let vault_path = self.cover_vault_path_for_checksum(&checksum, extension.as_deref());
+        let was_already_in_vault = vault_path.exists();
+        if !was_already_in_vault {
+            copy_into_vault(&request.source_path, &vault_path)?;
+        }
+
+        let id = new_id();
+        let now = now();
+        self.conn.execute(
+            "INSERT INTO cover_assets
+                (id, storage_state, vault_path, checksum, mime_type, width, height,
+                 file_size, source, created_at, updated_at)
+             VALUES (?1, 'local', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            params![
+                id,
+                vault_path.to_string_lossy(),
+                checksum,
+                mime_type,
+                request.width,
+                request.height,
+                file_size,
+                request.source,
+                now,
+            ],
+        )?;
+
+        Ok(ImportCoverAssetResult {
+            cover_asset: self.get_cover_asset(&id)?,
+            was_already_in_vault,
+        })
+    }
+
+    pub fn import_embedded_cover_for_audio_asset(
+        &self,
+        audio_asset_id: &str,
+        request: ImportCoverAssetRequest,
+    ) -> Result<ImportCoverAssetResult> {
+        self.get_audio_asset(audio_asset_id)?;
+        let result = self.import_cover_asset(request)?;
+        self.attach_cover_asset(CoverRelationshipRequest {
+            cover_asset_id: result.cover_asset.id.clone(),
+            target_type: CoverTargetType::AudioAsset,
+            target_id: audio_asset_id.to_string(),
+            relationship_type: CoverRelationshipType::EmbeddedOriginalCover,
+        })?;
+        Ok(result)
+    }
+
+    pub fn attach_cover_asset(
+        &self,
+        request: CoverRelationshipRequest,
+    ) -> Result<CoverRelationship> {
+        self.ensure_cover_asset_exists(&request.cover_asset_id)?;
+        self.ensure_cover_target_exists(request.target_type, &request.target_id)?;
+        let cover_asset_id = request.cover_asset_id.clone();
+        let target_id = request.target_id.clone();
+        let id = new_id();
+        let now = now();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO cover_relationships
+                (id, cover_asset_id, target_type, target_id, relationship_type, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                cover_asset_id,
+                request.target_type.as_str(),
+                target_id,
+                request.relationship_type.as_str(),
+                now,
+            ],
+        )?;
+        self.find_cover_relationship(
+            &request.cover_asset_id,
+            request.target_type,
+            &request.target_id,
+            request.relationship_type,
+        )?
+        .ok_or_else(|| anyhow!("cover relationship was not saved"))
+    }
+
+    pub fn set_track_preferred_cover(
+        &self,
+        track_identity_id: &str,
+        cover_asset_id: Option<&str>,
+    ) -> Result<TrackIdentity> {
+        self.ensure_track_identity_exists(track_identity_id)?;
+        if let Some(cover_asset_id) = cover_asset_id {
+            self.ensure_cover_asset_exists(cover_asset_id)?;
+            self.attach_cover_asset(CoverRelationshipRequest {
+                cover_asset_id: cover_asset_id.to_string(),
+                target_type: CoverTargetType::TrackIdentity,
+                target_id: track_identity_id.to_string(),
+                relationship_type: CoverRelationshipType::TrackArtwork,
+            })?;
+        }
+        self.conn.execute(
+            "UPDATE track_identities
+             SET preferred_cover_asset_id = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![cover_asset_id, now(), track_identity_id],
+        )?;
+        self.get_track_identity(track_identity_id)
+    }
+
     pub fn list_tracks(&self) -> Result<Vec<TrackRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, artist, title, version, user_rating, best_lossy_asset_id,
                     best_lossless_asset_id, best_verified_asset_id, nostalgia_asset_id,
-                    created_at, updated_at
+                    preferred_cover_asset_id, created_at, updated_at
              FROM track_identities
              ORDER BY updated_at DESC, artist ASC, title ASC",
         )?;
@@ -610,6 +860,21 @@ impl Archive {
               value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS cover_assets (
+              id TEXT PRIMARY KEY,
+              storage_state TEXT NOT NULL CHECK (storage_state IN ('local', 'external', 'shadow', 'missing')),
+              vault_path TEXT,
+              checksum TEXT,
+              mime_type TEXT,
+              width INTEGER,
+              height INTEGER,
+              file_size INTEGER,
+              source TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE (checksum, file_size)
+            );
+
             CREATE TABLE IF NOT EXISTS track_identities (
               id TEXT PRIMARY KEY,
               artist TEXT NOT NULL,
@@ -620,6 +885,7 @@ impl Archive {
               best_lossless_asset_id TEXT,
               best_verified_asset_id TEXT,
               nostalgia_asset_id TEXT,
+              preferred_cover_asset_id TEXT REFERENCES cover_assets(id) ON DELETE SET NULL,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
@@ -670,10 +936,24 @@ impl Archive {
               PRIMARY KEY (track_identity_id, tag_id)
             );
 
+            CREATE TABLE IF NOT EXISTS cover_relationships (
+              id TEXT PRIMARY KEY,
+              cover_asset_id TEXT NOT NULL REFERENCES cover_assets(id) ON DELETE RESTRICT,
+              target_type TEXT NOT NULL CHECK (target_type IN ('track_identity', 'audio_asset', 'release', 'collection')),
+              target_id TEXT NOT NULL,
+              relationship_type TEXT NOT NULL CHECK (relationship_type IN ('embedded_original_cover', 'release_cover', 'collection_cover', 'track_artwork')),
+              created_at TEXT NOT NULL,
+              UNIQUE (cover_asset_id, target_type, target_id, relationship_type)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_audio_assets_track_identity_id
               ON audio_assets(track_identity_id);
             CREATE INDEX IF NOT EXISTS idx_track_identity_tags_tag_id
               ON track_identity_tags(tag_id);
+            CREATE INDEX IF NOT EXISTS idx_cover_relationships_target
+              ON cover_relationships(target_type, target_id);
+            CREATE INDEX IF NOT EXISTS idx_cover_relationships_cover_asset_id
+              ON cover_relationships(cover_asset_id);
             ",
         )?;
         self.conn.execute(
@@ -794,7 +1074,7 @@ impl Archive {
             .query_row(
                 "SELECT id, artist, title, version, user_rating, best_lossy_asset_id,
                         best_lossless_asset_id, best_verified_asset_id, nostalgia_asset_id,
-                        created_at, updated_at
+                        preferred_cover_asset_id, created_at, updated_at
                  FROM track_identities WHERE id = ?1",
                 params![track_identity_id],
                 |row| track_identity_from_row(row),
@@ -811,6 +1091,50 @@ impl Archive {
             })
             .optional()?
             .ok_or_else(|| anyhow!("audio asset not found: {audio_asset_id}"))
+    }
+
+    fn find_cover_asset(&self, checksum: &str, file_size: i64) -> Result<Option<CoverAsset>> {
+        let sql = COVER_ASSET_SELECT.to_string() + " WHERE checksum = ?1 AND file_size = ?2";
+        self.conn
+            .query_row(&sql, params![checksum, file_size], |row| {
+                cover_asset_from_row(row)
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn get_cover_asset(&self, cover_asset_id: &str) -> Result<CoverAsset> {
+        let sql = COVER_ASSET_SELECT.to_string() + " WHERE id = ?1";
+        self.conn
+            .query_row(&sql, params![cover_asset_id], |row| {
+                cover_asset_from_row(row)
+            })
+            .optional()?
+            .ok_or_else(|| anyhow!("cover asset not found: {cover_asset_id}"))
+    }
+
+    fn find_cover_relationship(
+        &self,
+        cover_asset_id: &str,
+        target_type: CoverTargetType,
+        target_id: &str,
+        relationship_type: CoverRelationshipType,
+    ) -> Result<Option<CoverRelationship>> {
+        self.conn
+            .query_row(
+                "SELECT id, cover_asset_id, target_type, target_id, relationship_type, created_at
+                 FROM cover_relationships
+                 WHERE cover_asset_id = ?1 AND target_type = ?2 AND target_id = ?3 AND relationship_type = ?4",
+                params![
+                    cover_asset_id,
+                    target_type.as_str(),
+                    target_id,
+                    relationship_type.as_str(),
+                ],
+                |row| cover_relationship_from_row(row),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn find_asset_by_role(
@@ -937,6 +1261,29 @@ impl Archive {
         }
     }
 
+    fn ensure_cover_asset_exists(&self, cover_asset_id: &str) -> Result<()> {
+        self.get_cover_asset(cover_asset_id).map(|_| ())
+    }
+
+    fn ensure_cover_target_exists(
+        &self,
+        target_type: CoverTargetType,
+        target_id: &str,
+    ) -> Result<()> {
+        match target_type {
+            CoverTargetType::TrackIdentity => self.ensure_track_identity_exists(target_id),
+            CoverTargetType::AudioAsset => self.get_audio_asset(target_id).map(|_| ()),
+            // Release and Collection entities are planned; relationships can be staged by ID.
+            CoverTargetType::Release | CoverTargetType::Collection => {
+                if target_id.trim().is_empty() {
+                    Err(anyhow!("cover relationship target_id must not be empty"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     fn touch_track(&self, track_identity_id: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE track_identities SET updated_at = ?1 WHERE id = ?2",
@@ -953,6 +1300,18 @@ impl Archive {
         }
         self.vault_root
             .join("originals")
+            .join(&checksum[0..2])
+            .join(filename)
+    }
+
+    fn cover_vault_path_for_checksum(&self, checksum: &str, extension: Option<&str>) -> PathBuf {
+        let mut filename = checksum.to_string();
+        if let Some(extension) = extension {
+            filename.push('.');
+            filename.push_str(extension);
+        }
+        self.vault_root
+            .join("covers")
             .join(&checksum[0..2])
             .join(filename)
     }
@@ -981,6 +1340,9 @@ const AUDIO_ASSET_SELECT: &str = "SELECT id, track_identity_id, role, storage_st
     true_lossless_verified, suspected_transcode, original_tags_json,
     created_at, updated_at FROM audio_assets";
 
+const COVER_ASSET_SELECT: &str = "SELECT id, storage_state, vault_path, checksum, mime_type,
+    width, height, file_size, source, created_at, updated_at FROM cover_assets";
+
 fn track_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackIdentity> {
     Ok(TrackIdentity {
         id: row.get(0)?,
@@ -992,8 +1354,9 @@ fn track_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackIde
         best_lossless_asset_id: row.get(6)?,
         best_verified_asset_id: row.get(7)?,
         nostalgia_asset_id: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        preferred_cover_asset_id: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -1030,6 +1393,37 @@ fn audio_asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioAsset>
         original_tags_json: row.get(23)?,
         created_at: row.get(24)?,
         updated_at: row.get(25)?,
+    })
+}
+
+fn cover_asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CoverAsset> {
+    let storage_state: String = row.get(1)?;
+    Ok(CoverAsset {
+        id: row.get(0)?,
+        storage_state: StorageState::try_from(storage_state.as_str()).map_err(to_sql_error)?,
+        vault_path: row.get(2)?,
+        checksum: row.get(3)?,
+        mime_type: row.get(4)?,
+        width: row.get(5)?,
+        height: row.get(6)?,
+        file_size: row.get(7)?,
+        source: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn cover_relationship_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CoverRelationship> {
+    let target_type: String = row.get(2)?;
+    let relationship_type: String = row.get(4)?;
+    Ok(CoverRelationship {
+        id: row.get(0)?,
+        cover_asset_id: row.get(1)?,
+        target_type: CoverTargetType::try_from(target_type.as_str()).map_err(to_sql_error)?,
+        target_id: row.get(3)?,
+        relationship_type: CoverRelationshipType::try_from(relationship_type.as_str())
+            .map_err(to_sql_error)?,
+        created_at: row.get(5)?,
     })
 }
 
@@ -1180,6 +1574,34 @@ fn validate_quality_score(value: Option<i64>) -> Result<()> {
 
 fn normalize_format(format: &str) -> String {
     format.trim().trim_start_matches('.').to_ascii_lowercase()
+}
+
+fn infer_image_mime_type(path: &Path) -> Option<String> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => Some("image/jpeg".to_string()),
+        Some("png") => Some("image/png".to_string()),
+        Some("webp") => Some("image/webp".to_string()),
+        Some("gif") => Some("image/gif".to_string()),
+        _ => None,
+    }
+}
+
+fn image_extension(mime_type: Option<&str>, source_path: &Path) -> Option<String> {
+    match mime_type {
+        Some("image/jpeg") => Some("jpg".to_string()),
+        Some("image/png") => Some("png".to_string()),
+        Some("image/webp") => Some("webp".to_string()),
+        Some("image/gif") => Some("gif".to_string()),
+        _ => source_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase()),
+    }
 }
 
 fn bool_to_int(value: bool) -> i64 {
@@ -1518,6 +1940,111 @@ mod tests {
         assert_eq!(asset.replaygain_track_gain_db, Some(-4.7));
         assert_eq!(asset.replaygain_album_gain_db, Some(-3.2));
         assert!(asset.clipping_risk);
+    }
+
+    #[test]
+    fn cover_assets_are_imported_to_vault_and_deduplicated_by_hash() {
+        let (test_dir, archive) = archive();
+        let cover_path = test_dir.path().join("cover.jpg");
+        fs::write(&cover_path, b"same embedded album cover").expect("cover");
+
+        let first = archive
+            .import_cover_asset(ImportCoverAssetRequest {
+                source_path: cover_path.clone(),
+                mime_type: Some("image/jpeg".to_string()),
+                width: Some(1200),
+                height: Some(1200),
+                source: Some("embedded artwork".to_string()),
+            })
+            .expect("first cover import");
+        let second = archive
+            .import_cover_asset(ImportCoverAssetRequest {
+                source_path: cover_path,
+                mime_type: Some("image/jpeg".to_string()),
+                width: Some(1200),
+                height: Some(1200),
+                source: Some("embedded artwork duplicate".to_string()),
+            })
+            .expect("second cover import");
+
+        assert_eq!(first.cover_asset.id, second.cover_asset.id);
+        assert_eq!(first.cover_asset.mime_type.as_deref(), Some("image/jpeg"));
+        assert_eq!(first.cover_asset.width, Some(1200));
+        assert!(Path::new(first.cover_asset.vault_path.as_deref().unwrap()).exists());
+        assert!(second.was_already_in_vault);
+    }
+
+    #[test]
+    fn embedded_original_cover_relationships_are_separate_from_audio_roles() {
+        let (test_dir, archive) = archive();
+        let identity = create_identity(&archive);
+        let asset = register_asset(&archive, &identity.id, None, "mp3", false, false);
+        let cover_path = test_dir.path().join("embedded.png");
+        fs::write(&cover_path, b"png cover bytes").expect("cover");
+
+        let cover = archive
+            .import_embedded_cover_for_audio_asset(
+                &asset.id,
+                ImportCoverAssetRequest {
+                    source_path: cover_path,
+                    mime_type: Some("image/png".to_string()),
+                    width: Some(800),
+                    height: Some(800),
+                    source: Some("extracted from audio asset".to_string()),
+                },
+            )
+            .expect("embedded cover");
+
+        let relationship = archive
+            .find_cover_relationship(
+                &cover.cover_asset.id,
+                CoverTargetType::AudioAsset,
+                &asset.id,
+                CoverRelationshipType::EmbeddedOriginalCover,
+            )
+            .expect("relationship lookup")
+            .expect("relationship");
+
+        assert_eq!(
+            relationship.relationship_type,
+            CoverRelationshipType::EmbeddedOriginalCover
+        );
+        assert_eq!(asset.role, RepresentationRole::FirstFound);
+    }
+
+    #[test]
+    fn track_identity_can_point_to_preferred_cover_asset() {
+        let (test_dir, archive) = archive();
+        let identity = create_identity(&archive);
+        let cover_path = test_dir.path().join("track-art.webp");
+        fs::write(&cover_path, b"track specific art").expect("cover");
+        let cover = archive
+            .import_cover_asset(ImportCoverAssetRequest {
+                source_path: cover_path,
+                mime_type: Some("image/webp".to_string()),
+                width: Some(1600),
+                height: Some(900),
+                source: Some("manual track artwork".to_string()),
+            })
+            .expect("cover");
+
+        let updated = archive
+            .set_track_preferred_cover(&identity.id, Some(&cover.cover_asset.id))
+            .expect("preferred cover");
+
+        assert_eq!(
+            updated.preferred_cover_asset_id.as_deref(),
+            Some(cover.cover_asset.id.as_str())
+        );
+        assert!(archive
+            .find_cover_relationship(
+                &cover.cover_asset.id,
+                CoverTargetType::TrackIdentity,
+                &identity.id,
+                CoverRelationshipType::TrackArtwork,
+            )
+            .expect("relationship lookup")
+            .is_some());
     }
 
     #[test]
