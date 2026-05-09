@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { languageNames, translate, type Language } from "./i18n";
 
 type RepresentationRole = "first_found" | "nostalgia" | "variant";
 type StorageState = "local" | "external" | "shadow" | "missing";
@@ -108,6 +109,10 @@ const initialFolderForm: FolderImportForm = {
 };
 
 function App() {
+  const [language, setLanguage] = useState<Language>(() => {
+    const stored = window.localStorage.getItem("music-os-language");
+    return stored === "de" || stored === "en" || stored === "es" ? stored : "de";
+  });
   const [tracks, setTracks] = useState<TrackRecord[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [importForm, setImportForm] = useState<ImportForm>(initialImportForm);
@@ -125,8 +130,9 @@ function App() {
   const [tagDraft, setTagDraft] = useState("");
   const [exportBasketIds, setExportBasketIds] = useState<string[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [status, setStatus] = useState("Ready to preserve, optimize, and find music.");
+  const [status, setStatus] = useState(() => translate(language, "statusReady"));
   const [error, setError] = useState<string | null>(null);
+  const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
   const filteredTracks = useMemo(
     () => tracks.filter((record) => matchesFilters(record, filters)),
@@ -173,6 +179,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    window.localStorage.setItem("music-os-language", language);
+  }, [language]);
+
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     getCurrentWebview()
       .onDragDropEvent((event) => {
@@ -216,7 +226,13 @@ function App() {
 
   async function importTrack(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setStatus("Importing file into checksum vault and extracting filename tags...");
+    setStatus(
+      language === "de"
+        ? "Importiere Datei in den Checksum-Vault und lese Dateiname-Tags..."
+        : language === "es"
+          ? "Importando archivo al vault y extrayendo etiquetas del nombre..."
+          : "Importing file into checksum vault and extracting filename tags...",
+    );
     setError(null);
     try {
       await invoke("import_music_file", {
@@ -233,17 +249,35 @@ function App() {
         },
       });
       setImportForm(initialImportForm);
-      setStatus("File import complete. Source bytes were preserved.");
+      setStatus(
+        language === "de"
+          ? "Dateiimport abgeschlossen. Quelldatei wurde unverändert gelassen."
+          : language === "es"
+            ? "Importación completada. El archivo original no fue modificado."
+            : "File import complete. Source bytes were preserved.",
+      );
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
-      setStatus("File import failed.");
+      setStatus(
+        language === "de"
+          ? "Dateiimport fehlgeschlagen."
+          : language === "es"
+            ? "Error al importar el archivo."
+            : "File import failed.",
+      );
     }
   }
 
   async function importFolder(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setStatus("Scanning folder and importing supported audio files...");
+    setStatus(
+      language === "de"
+        ? "Scanne Ordner und importiere unterstützte Audiodateien..."
+        : language === "es"
+          ? "Escaneando carpeta e importando archivos de audio compatibles..."
+          : "Scanning folder and importing supported audio files...",
+    );
     setError(null);
     setLastFolderImport(null);
     try {
@@ -255,13 +289,17 @@ function App() {
         },
       });
       setLastFolderImport(result);
-      setStatus(
-        `Folder import complete: ${result.imported_files} imported, ${result.skipped_files} skipped, ${result.errors.length} errors.`,
-      );
+      setStatus(formatFolderImportStatus(language, result));
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
-      setStatus("Folder import failed.");
+      setStatus(
+        language === "de"
+          ? "Ordnerimport fehlgeschlagen."
+          : language === "es"
+            ? "Error al importar la carpeta."
+            : "Folder import failed.",
+      );
     }
   }
 
@@ -270,7 +308,13 @@ function App() {
       return;
     }
 
-    setStatus(`Importing ${paths.length} dropped path${paths.length === 1 ? "" : "s"}...`);
+    setStatus(
+      language === "de"
+        ? `Importiere ${paths.length} abgelegte Pfade...`
+        : language === "es"
+          ? `Importando ${paths.length} rutas soltadas...`
+          : `Importing ${paths.length} dropped path${paths.length === 1 ? "" : "s"}...`,
+    );
     setError(null);
     const aggregate: ImportFolderResult = {
       scanned_files: 0,
@@ -316,9 +360,7 @@ function App() {
     }
 
     setLastFolderImport(aggregate);
-    setStatus(
-      `Drop import complete: ${aggregate.imported_files} imported, ${aggregate.skipped_files} skipped, ${aggregate.errors.length} errors.`,
-    );
+    setStatus(formatDropImportStatus(language, aggregate));
     await refreshTracks();
   }
 
@@ -332,7 +374,13 @@ function App() {
         trackIdentityId: selectedTrack.identity.id,
         userRating: optionalNumber(ratingDraft),
       });
-      setStatus("Global track rating updated.");
+      setStatus(
+        language === "de"
+          ? "Globale Track-Bewertung aktualisiert."
+          : language === "es"
+            ? "Valoración global actualizada."
+            : "Global track rating updated.",
+      );
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
@@ -349,7 +397,13 @@ function App() {
         trackIdentityId: selectedTrack.identity.id,
         semanticTags: splitTags(tagDraft),
       });
-      setStatus("Current track tags updated.");
+      setStatus(
+        language === "de"
+          ? "Aktuelle Tags aktualisiert."
+          : language === "es"
+            ? "Etiquetas actuales actualizadas."
+            : "Current track tags updated.",
+      );
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
@@ -362,7 +416,13 @@ function App() {
         audioAssetId: assetId,
         storageState,
       });
-      setStatus(`Asset storage state changed to ${label(storageState)}.`);
+      setStatus(
+        language === "de"
+          ? `Speicherstatus geändert zu ${label(storageState)}.`
+          : language === "es"
+            ? `Estado de almacenamiento cambiado a ${label(storageState)}.`
+            : `Asset storage state changed to ${label(storageState)}.`,
+      );
       await refreshTracks();
     } catch (caught) {
       setError(formatError(caught));
@@ -391,13 +451,19 @@ function App() {
 
   async function exportBasketAsM3u() {
     if (exportBasketIds.length === 0) {
-      setError("Export basket is empty.");
+      setError(
+        language === "de"
+          ? "Der Exportkorb ist leer."
+          : language === "es"
+            ? "La cesta de exportación está vacía."
+            : "Export basket is empty.",
+      );
       return;
     }
 
     try {
       const destinationPath = await save({
-        title: "Export M3U playlist",
+        title: t("exportBasketAsM3u"),
         defaultPath: "music-os-playlist.m3u",
         filters: [{ name: "M3U playlist", extensions: ["m3u"] }],
       });
@@ -411,7 +477,11 @@ function App() {
         },
       });
       setStatus(
-        `M3U exported: ${result.exported_tracks} tracks, ${result.skipped_tracks} skipped.`,
+        language === "de"
+          ? `M3U exportiert: ${result.exported_tracks} Tracks, ${result.skipped_tracks} übersprungen.`
+          : language === "es"
+            ? `M3U exportado: ${result.exported_tracks} canciones, ${result.skipped_tracks} omitidas.`
+            : `M3U exported: ${result.exported_tracks} tracks, ${result.skipped_tracks} skipped.`,
       );
       if (result.warnings.length > 0) {
         setError(result.warnings.slice(0, 5).join(" | "));
@@ -428,7 +498,7 @@ function App() {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Choose a music folder",
+        title: t("chooseFolder"),
       });
       if (typeof selected === "string") {
         setFolderForm({ ...folderForm, rootPath: selected });
@@ -443,7 +513,7 @@ function App() {
       const selected = await open({
         directory: false,
         multiple: false,
-        title: "Choose an audio file",
+        title: t("chooseAudioFile"),
         filters: [
           {
             name: "Audio",
@@ -463,17 +533,39 @@ function App() {
     <main className="shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">Local-first collection optimizer</p>
-          <h1>Music OS</h1>
-          <p>
-            Import folders, preserve source files, extract filename hashtags, rate
-            globally, and filter a growing local music collection.
+          <p className="eyebrow">
+            {language === "de"
+              ? "Lokaler Sammlungs-Optimierer"
+              : language === "es"
+                ? "Optimizador local de colección"
+                : "Local-first collection optimizer"}
           </p>
+          <h1>Music OS</h1>
+          <p>{t("heroSubtitle")}</p>
         </div>
         <div className="principles">
-          <span>{libraryStats.tracks} track identities</span>
-          <span>{libraryStats.assets} audio assets</span>
-          <span>{libraryStats.tags} semantic tags</span>
+          <label className="language-select">
+            {t("language")}
+            <select
+              value={language}
+              onChange={(event) => setLanguage(event.target.value as Language)}
+            >
+              {(Object.keys(languageNames) as Language[]).map((option) => (
+                <option key={option} value={option}>
+                  {languageNames[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span>
+            {libraryStats.tracks} {t("trackIdentities")}
+          </span>
+          <span>
+            {libraryStats.assets} {t("audioAssets")}
+          </span>
+          <span>
+            {libraryStats.tags} {t("tags")}
+          </span>
         </div>
       </section>
 
@@ -483,23 +575,17 @@ function App() {
       </section>
 
       <section className={isDraggingOver ? "drop-zone dragging" : "drop-zone"}>
-        <strong>Drag & drop music here</strong>
-        <span>
-          Drop audio files or folders. Default rating/tags from the folder import
-          form are applied.
-        </span>
+        <strong>{t("dragDropTitle")}</strong>
+        <span>{t("dragDropHint")}</span>
       </section>
 
       <div className="grid">
         <section className="card">
-          <h2>Folder import</h2>
-          <p className="muted">
-            Recursively imports supported audio files and turns suffixes like{" "}
-            <code>#2020 #house #party</code> into searchable TrackIdentity tags.
-          </p>
+          <h2>{t("folderImport")}</h2>
+          <p className="muted">{t("folderImportHelp")}</p>
           <form className="stack" onSubmit={importFolder}>
             <label>
-              Music folder path
+              {t("musicFolderPath")}
               <input
                 required
                 value={folderForm.rootPath}
@@ -510,11 +596,11 @@ function App() {
               />
             </label>
             <button type="button" onClick={() => void chooseFolder()}>
-              Choose folder...
+              {t("chooseFolder")}
             </button>
             <div className="two-column">
               <label>
-                Default rating
+                {t("defaultRating")}
                 <input
                   type="number"
                   min="1"
@@ -526,7 +612,7 @@ function App() {
                 />
               </label>
               <label>
-                Add tags to all
+                {t("addTagsToAll")}
                 <input
                   value={folderForm.semanticTags}
                   onChange={(event) =>
@@ -536,12 +622,12 @@ function App() {
                 />
               </label>
             </div>
-            <button type="submit">Import folder</button>
+            <button type="submit">{t("importFolder")}</button>
           </form>
 
           {lastFolderImport && (
             <div className="import-summary">
-              <strong>Last folder import</strong>
+              <strong>{t("lastFolderImport")}</strong>
               <div className="summary-grid">
                 <span>Scanned: {lastFolderImport.scanned_files}</span>
                 <span>Imported: {lastFolderImport.imported_files}</span>
@@ -550,7 +636,7 @@ function App() {
               </div>
               {lastFolderImport.errors.length > 0 && (
                 <details>
-                  <summary>Show import errors</summary>
+                  <summary>{t("showImportErrors")}</summary>
                   <ul>
                     {lastFolderImport.errors.slice(0, 20).map((item) => (
                       <li key={`${item.path}-${item.error}`}>
@@ -565,10 +651,11 @@ function App() {
         </section>
 
         <section className="card">
-          <h2>Single file import</h2>
+          <h2>{t("fileImport")}</h2>
+          <p className="muted">{t("singleFileHelp")}</p>
           <form className="stack" onSubmit={importTrack}>
             <label>
-              Source file path
+              {t("sourceFilePath")}
               <input
                 required
                 value={importForm.sourcePath}
@@ -579,43 +666,61 @@ function App() {
               />
             </label>
             <button type="button" onClick={() => void chooseFile()}>
-              Choose audio file...
+              {t("chooseAudioFile")}
             </button>
             <div className="two-column">
               <label>
-                Artist
+                {t("artist")}
                 <input
                   value={importForm.artist}
                   onChange={(event) =>
                     setImportForm({ ...importForm, artist: event.target.value })
                   }
-                  placeholder="Infer from filename"
+                  placeholder={
+                    language === "de"
+                      ? "Aus Dateiname ableiten"
+                      : language === "es"
+                        ? "Inferir del nombre"
+                        : "Infer from filename"
+                  }
                 />
               </label>
               <label>
-                Title
+                {t("title")}
                 <input
                   value={importForm.title}
                   onChange={(event) =>
                     setImportForm({ ...importForm, title: event.target.value })
                   }
-                  placeholder="Infer from filename"
+                  placeholder={
+                    language === "de"
+                      ? "Aus Dateiname ableiten"
+                      : language === "es"
+                        ? "Inferir del nombre"
+                        : "Infer from filename"
+                  }
                 />
               </label>
             </div>
             <div className="three-column">
               <label>
-                Version
+                {t("version")}
                 <input
                   value={importForm.version}
                   onChange={(event) =>
                     setImportForm({ ...importForm, version: event.target.value })
                   }
-                  placeholder="Radio edit, live..."
+                  placeholder={
+                    language === "de"
+                      ? "Radio Edit, live..."
+                      : language === "es"
+                        ? "Radio edit, en vivo..."
+                        : "Radio edit, live..."
+                  }
                 />
               </label>
               <label>
-                Role
+                {t("role")}
                 <select
                   value={importForm.role}
                   onChange={(event) =>
@@ -625,7 +730,7 @@ function App() {
                     })
                   }
                 >
-                  <option value="">Auto</option>
+                  <option value="">{t("auto")}</option>
                   {roles.map((role) => (
                     <option key={role} value={role}>
                       {label(role)}
@@ -634,7 +739,7 @@ function App() {
                 </select>
               </label>
               <label>
-                Rating
+                {t("defaultRating")}
                 <input
                   type="number"
                   min="1"
@@ -647,7 +752,7 @@ function App() {
               </label>
             </div>
             <label>
-              Additional tags
+              {t("addTagsToAll")}
               <input
                 value={importForm.semanticTags}
                 onChange={(event) =>
@@ -656,7 +761,7 @@ function App() {
                 placeholder="#party #deutsch #bass"
               />
             </label>
-            <button type="submit">Import file</button>
+            <button type="submit">{t("importFile")}</button>
           </form>
         </section>
       </div>
@@ -664,16 +769,16 @@ function App() {
       <section className="card library-card">
         <div className="detail-header">
           <div>
-            <p className="eyebrow">Library retrieval</p>
-            <h2>Search and filter</h2>
+            <p className="eyebrow">{t("libraryRetrieval")}</p>
+            <h2>{t("searchAndFilter")}</h2>
           </div>
           <button type="button" onClick={() => void refreshTracks()}>
-            Refresh
+            {t("refresh")}
           </button>
         </div>
         <div className="four-column">
           <label>
-            Text
+            {t("text")}
             <input
               value={filters.text}
               onChange={(event) => setFilters({ ...filters, text: event.target.value })}
@@ -681,7 +786,7 @@ function App() {
             />
           </label>
           <label>
-            Tags
+            {t("tags")}
             <input
               value={filters.tags}
               onChange={(event) => setFilters({ ...filters, tags: event.target.value })}
@@ -689,7 +794,7 @@ function App() {
             />
           </label>
           <label>
-            Min rating
+            {t("minRating")}
             <input
               type="number"
               min="1"
@@ -701,7 +806,7 @@ function App() {
             />
           </label>
           <label>
-            Storage
+            {t("storage")}
             <select
               value={filters.storageState}
               onChange={(event) =>
@@ -711,7 +816,7 @@ function App() {
                 })
               }
             >
-              <option value="">Any</option>
+              <option value="">{t("any")}</option>
               {storageStates.map((state) => (
                 <option key={state} value={state}>
                   {label(state)}
@@ -722,25 +827,30 @@ function App() {
         </div>
 
         <p className="muted">
-          Showing {filteredTracks.length} of {tracks.length} tracks. Tag filters are
-          AND-based for now.
+          {language === "de"
+            ? `Zeige ${filteredTracks.length} von ${tracks.length} Tracks. ${t("filtersAndBased")}`
+            : language === "es"
+              ? `Mostrando ${filteredTracks.length} de ${tracks.length} canciones. ${t("filtersAndBased")}`
+              : `Showing ${filteredTracks.length} of ${tracks.length} tracks. ${t("filtersAndBased")}`}
         </p>
 
         <div className="basket-toolbar">
           <button type="button" onClick={addFilteredToExportBasket}>
-            Add filtered to export basket
+            {t("addFiltered")}
           </button>
           <button type="button" onClick={() => void exportBasketAsM3u()}>
-            Export basket as M3U
+            {t("exportBasketAsM3u")}
           </button>
           <button type="button" onClick={() => setExportBasketIds([])}>
-            Clear basket
+            {t("clearBasket")}
           </button>
-          <span>{exportBasketIds.length} tracks in basket</span>
+          <span>
+            {exportBasketIds.length} {t("tracksInBasket")}
+          </span>
         </div>
 
         {tracks.length === 0 ? (
-          <p className="empty">No tracks yet. Import a small test folder first.</p>
+          <p className="empty">{t("noTracks")}</p>
         ) : (
           <div className="library-layout">
             <div className="track-list">
@@ -775,7 +885,9 @@ function App() {
                         : "basket-marker"
                     }
                   >
-                    {exportBasketIds.includes(record.identity.id) ? "in basket" : "not queued"}
+                    {exportBasketIds.includes(record.identity.id)
+                      ? t("exportBasket")
+                      : t("notQueued")}
                   </span>
                 </button>
               ))}
@@ -785,7 +897,7 @@ function App() {
               <section className="detail-panel">
                 <div className="detail-header">
                   <div>
-                    <p className="eyebrow">TrackIdentity</p>
+                    <p className="eyebrow">{t("detailTrackIdentity")}</p>
                     <h2>{selectedTrack.identity.title}</h2>
                     <p>{selectedTrack.identity.artist}</p>
                   </div>
@@ -793,16 +905,16 @@ function App() {
                     type="button"
                     onClick={() => addToExportBasket(selectedTrack.identity.id)}
                   >
-                    Add to export basket
+                    {t("addToBasket")}
                   </button>
                 </div>
 
                 <div className="detail-grid">
                   <section>
-                    <h3>Global rating</h3>
+                    <h3>{t("globalRating")}</h3>
                     <form className="stack" onSubmit={updateRating}>
                       <label>
-                        User rating, 1-5 stars
+                        {t("ratingOneToFive")}
                         <input
                           type="number"
                           min="1"
@@ -811,22 +923,22 @@ function App() {
                           onChange={(event) => setRatingDraft(event.target.value)}
                         />
                       </label>
-                      <button type="submit">Save rating</button>
+                      <button type="submit">{t("saveRating")}</button>
                     </form>
                   </section>
 
                   <section>
-                    <h3>Semantic tags</h3>
+                    <h3>{t("tags")}</h3>
                     <form className="stack" onSubmit={replaceTags}>
                       <label>
-                        Current tags
+                        {t("currentTags")}
                         <input
                           value={tagDraft}
                           onChange={(event) => setTagDraft(event.target.value)}
                           placeholder="#party #80s #deutsch"
                         />
                       </label>
-                      <button type="submit">Replace current tags</button>
+                      <button type="submit">{t("replaceCurrentTags")}</button>
                     </form>
                     <ul className="pill-list">
                       {selectedTrack.tags.map((tag) => (
@@ -837,14 +949,14 @@ function App() {
                 </div>
 
                 <section>
-                  <h3>Audio assets</h3>
+                  <h3>{t("audioAssets")}</h3>
                   <div className="representation-list">
                     {selectedTrack.assets.map((asset) => (
                       <article key={asset.id} className="representation">
                         <div>
                           <strong>{label(asset.role)}</strong>
                           <p>
-                            {asset.format?.toUpperCase() ?? "Unknown format"}
+                            {asset.format?.toUpperCase() ?? t("unknownFormat")}
                             {asset.true_lossless_verified ? " - verified lossless" : ""}
                             {asset.suspected_transcode ? " - suspected transcode" : ""}
                           </p>
@@ -872,7 +984,7 @@ function App() {
 
                 {exportBasketTracks.length > 0 && (
                   <section>
-                    <h3>Export basket</h3>
+                    <h3>{t("exportBasket")}</h3>
                     <div className="basket-list">
                       {exportBasketTracks.map((record) => (
                         <article key={record.identity.id} className="basket-item">
@@ -883,7 +995,7 @@ function App() {
                             type="button"
                             onClick={() => removeFromExportBasket(record.identity.id)}
                           >
-                            Remove
+                            {t("remove")}
                           </button>
                         </article>
                       ))}
@@ -955,6 +1067,26 @@ function splitTags(value: string) {
 
 function normalizeTag(value: string) {
   return value.trim().replace(/^#/, "").toLowerCase();
+}
+
+function formatFolderImportStatus(language: Language, result: ImportFolderResult) {
+  if (language === "de") {
+    return `Ordnerimport abgeschlossen: ${result.imported_files} importiert, ${result.skipped_files} übersprungen, ${result.errors.length} Fehler.`;
+  }
+  if (language === "es") {
+    return `Importación de carpeta completada: ${result.imported_files} importados, ${result.skipped_files} omitidos, ${result.errors.length} errores.`;
+  }
+  return `Folder import complete: ${result.imported_files} imported, ${result.skipped_files} skipped, ${result.errors.length} errors.`;
+}
+
+function formatDropImportStatus(language: Language, result: ImportFolderResult) {
+  if (language === "de") {
+    return `Drop-Import abgeschlossen: ${result.imported_files} importiert, ${result.skipped_files} übersprungen, ${result.errors.length} Fehler.`;
+  }
+  if (language === "es") {
+    return `Importación por arrastre completada: ${result.imported_files} importados, ${result.skipped_files} omitidos, ${result.errors.length} errores.`;
+  }
+  return `Drop import complete: ${result.imported_files} imported, ${result.skipped_files} skipped, ${result.errors.length} errors.`;
 }
 
 function isSupportedAudioPath(path: string) {

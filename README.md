@@ -49,6 +49,7 @@ can be tested without the desktop runtime.
 - Store cover artwork as first-class CoverAssets with checksums, vault paths,
   storage state, and explicit relationships to audio, tracks, releases, or
   collections so identical embedded album art can be deduplicated.
+- Switch the MVP GUI between German, English, and Spanish.
 
 ## Development
 

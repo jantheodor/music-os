@@ -118,6 +118,10 @@ p {
   min-width: 18rem;
 }
 
+.language-select {
+  min-width: 12rem;
+}
+
 .principles span,
 .state,
 .pill-list li {
