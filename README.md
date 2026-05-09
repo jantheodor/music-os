@@ -44,6 +44,8 @@ can be tested without the desktop runtime.
 - Assign one global 1-5 star TrackIdentity rating.
 - Maintain preferred-asset pointers for best lossy, best verified lossless,
   best verified playback, and nostalgia playback.
+- Store playback-relevant loudness analysis metadata on AudioAssets and use
+  curated LoudnessProfiles instead of creating normalized duplicate files.
 
 ## Development
 

@@ -45,7 +45,8 @@ Represents one concrete audio file or a former/known audio file. It owns:
 - original path and original filename as provenance
 - checksum and optional audio fingerprint
 - format, bitrate, sample rate, duration, and file size
-- quality facts such as LUFS/DR/peak/quality score when available
+- quality and playback facts such as integrated LUFS, true peak, dynamic range,
+  ReplayGain track/album gain, clipping risk, and quality score when available
 - original tags read from the file as JSON when available
 - role and storage state
 
@@ -89,6 +90,36 @@ Playback selection:
 - Portable/compatibility mode uses `best_lossy_asset_id`.
 - Nostalgia mode uses `nostalgia_asset_id`, falling back to an asset with role
   `nostalgia` when available.
+
+### Loudness profiles
+
+Archive integrity is separate from playback loudness behavior. Music OS must not
+create separate audio files solely for loudness normalization or different
+listening contexts. One best audio source can support multiple listening
+experiences through different LoudnessProfiles.
+
+Loudness and dynamics analysis lives on AudioAsset. Playback/export can then
+apply a dynamic adjustment plan without modifying vault audio:
+
+- integrated LUFS
+- true peak
+- dynamic range
+- ReplayGain track gain
+- ReplayGain album gain
+- clipping risk
+
+Built-in MVP profiles:
+
+- `Original`: untouched playback, no normalization, no limiter.
+- `Album Respect`: album-oriented listening, prefer album gain, preserve
+  dynamics strongly, default for album playback.
+- `Shuffle Smooth`: moderate normalization for mixed playlists, default for
+  shuffle/mixed playback.
+- `Party`: stronger loudness consistency with optional soft limiting.
+- `Headphones`: controlled peaks and reduced listening fatigue.
+
+Manual override must remain possible, but advanced LUFS settings should not be
+prominent in the default UI.
 
 ### `semantic_tags` and `track_identity_tags`
 
@@ -165,7 +196,7 @@ remain preserved as provenance, while exports can use clean canonical names.
 ## Future extension points
 
 - Folder import and collection optimization workflows.
-- Acoustic fingerprinting and loudness metadata tables.
+- Acoustic fingerprinting and deeper loudness analyzers.
 - Export manifests that reconstruct ordinary folders from track/album state.
 - Search/filter UI for tags, ratings, formats, and storage state.
 - Optional explicit write-back/export of ratings and tags to materialized files.

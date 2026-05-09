@@ -124,7 +124,10 @@ pub struct AudioAsset {
     pub file_size: Option<i64>,
     pub dynamic_range: Option<f64>,
     pub integrated_lufs: Option<f64>,
-    pub peak_db: Option<f64>,
+    pub true_peak_db: Option<f64>,
+    pub replaygain_track_gain_db: Option<f64>,
+    pub replaygain_album_gain_db: Option<f64>,
+    pub clipping_risk: bool,
     pub quality_score: Option<i64>,
     pub true_lossless_verified: bool,
     pub suspected_transcode: bool,
@@ -194,7 +197,10 @@ pub struct RegisterAudioAssetRequest {
     pub file_size: Option<i64>,
     pub dynamic_range: Option<f64>,
     pub integrated_lufs: Option<f64>,
-    pub peak_db: Option<f64>,
+    pub true_peak_db: Option<f64>,
+    pub replaygain_track_gain_db: Option<f64>,
+    pub replaygain_album_gain_db: Option<f64>,
+    pub clipping_risk: bool,
     pub quality_score: Option<i64>,
     pub true_lossless_verified: bool,
     pub suspected_transcode: bool,
@@ -350,7 +356,10 @@ impl Archive {
             file_size: Some(file_size),
             dynamic_range: None,
             integrated_lufs: None,
-            peak_db: None,
+            true_peak_db: None,
+            replaygain_track_gain_db: None,
+            replaygain_album_gain_db: None,
+            clipping_risk: false,
             quality_score: None,
             true_lossless_verified: false,
             suspected_transcode: false,
@@ -378,11 +387,12 @@ impl Archive {
                 (id, track_identity_id, role, storage_state, vault_path, original_path,
                  original_filename, checksum, audio_fingerprint, format, bitrate_kbps,
                  sample_rate_hz, duration_ms, file_size, dynamic_range, integrated_lufs,
-                 peak_db, quality_score, true_lossless_verified, suspected_transcode,
-                 original_tags_json, created_at, updated_at)
+                 true_peak_db, replaygain_track_gain_db, replaygain_album_gain_db,
+                 clipping_risk, quality_score, true_lossless_verified,
+                 suspected_transcode, original_tags_json, created_at, updated_at)
              VALUES
                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?22)",
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?25)",
             params![
                 id,
                 request.track_identity_id,
@@ -400,7 +410,10 @@ impl Archive {
                 request.file_size,
                 request.dynamic_range,
                 request.integrated_lufs,
-                request.peak_db,
+                request.true_peak_db,
+                request.replaygain_track_gain_db,
+                request.replaygain_album_gain_db,
+                bool_to_int(request.clipping_risk),
                 request.quality_score,
                 bool_to_int(request.true_lossless_verified),
                 bool_to_int(request.suspected_transcode),
@@ -628,7 +641,10 @@ impl Archive {
               file_size INTEGER,
               dynamic_range REAL,
               integrated_lufs REAL,
-              peak_db REAL,
+              true_peak_db REAL,
+              replaygain_track_gain_db REAL,
+              replaygain_album_gain_db REAL,
+              clipping_risk INTEGER NOT NULL CHECK (clipping_risk IN (0, 1)),
               quality_score INTEGER CHECK (quality_score BETWEEN 0 AND 100),
               true_lossless_verified INTEGER NOT NULL CHECK (true_lossless_verified IN (0, 1)),
               suspected_transcode INTEGER NOT NULL CHECK (suspected_transcode IN (0, 1)),
@@ -960,8 +976,9 @@ impl AudioAsset {
 
 const AUDIO_ASSET_SELECT: &str = "SELECT id, track_identity_id, role, storage_state, vault_path,
     original_path, original_filename, checksum, audio_fingerprint, format, bitrate_kbps,
-    sample_rate_hz, duration_ms, file_size, dynamic_range, integrated_lufs, peak_db,
-    quality_score, true_lossless_verified, suspected_transcode, original_tags_json,
+    sample_rate_hz, duration_ms, file_size, dynamic_range, integrated_lufs, true_peak_db,
+    replaygain_track_gain_db, replaygain_album_gain_db, clipping_risk, quality_score,
+    true_lossless_verified, suspected_transcode, original_tags_json,
     created_at, updated_at FROM audio_assets";
 
 fn track_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackIdentity> {
@@ -983,8 +1000,9 @@ fn track_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackIde
 fn audio_asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioAsset> {
     let role: String = row.get(2)?;
     let storage_state: String = row.get(3)?;
-    let true_lossless_verified: i64 = row.get(18)?;
-    let suspected_transcode: i64 = row.get(19)?;
+    let clipping_risk: i64 = row.get(19)?;
+    let true_lossless_verified: i64 = row.get(21)?;
+    let suspected_transcode: i64 = row.get(22)?;
     Ok(AudioAsset {
         id: row.get(0)?,
         track_identity_id: row.get(1)?,
@@ -1002,13 +1020,16 @@ fn audio_asset_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioAsset>
         file_size: row.get(13)?,
         dynamic_range: row.get(14)?,
         integrated_lufs: row.get(15)?,
-        peak_db: row.get(16)?,
-        quality_score: row.get(17)?,
+        true_peak_db: row.get(16)?,
+        replaygain_track_gain_db: row.get(17)?,
+        replaygain_album_gain_db: row.get(18)?,
+        clipping_risk: clipping_risk == 1,
+        quality_score: row.get(20)?,
         true_lossless_verified: true_lossless_verified == 1,
         suspected_transcode: suspected_transcode == 1,
-        original_tags_json: row.get(20)?,
-        created_at: row.get(21)?,
-        updated_at: row.get(22)?,
+        original_tags_json: row.get(23)?,
+        created_at: row.get(24)?,
+        updated_at: row.get(25)?,
     })
 }
 
@@ -1267,7 +1288,10 @@ mod tests {
                 file_size: Some(1_000_000),
                 dynamic_range: Some(9.0),
                 integrated_lufs: Some(-14.0),
-                peak_db: Some(-1.0),
+                true_peak_db: Some(-1.0),
+                replaygain_track_gain_db: Some(-2.0),
+                replaygain_album_gain_db: Some(-1.0),
+                clipping_risk: false,
                 quality_score: Some(80),
                 true_lossless_verified,
                 suspected_transcode,
@@ -1453,6 +1477,47 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(tags, vec!["80s", "deutsch", "party"]);
+    }
+
+    #[test]
+    fn loudness_analysis_fields_persist_on_audio_asset() {
+        let (_test_dir, archive) = archive();
+        let identity = create_identity(&archive);
+
+        let asset = archive
+            .register_audio_asset(RegisterAudioAssetRequest {
+                track_identity_id: identity.id.clone(),
+                role: None,
+                storage_state: StorageState::Local,
+                vault_path: Some("/vault/originals/aa/song.mp3".to_string()),
+                original_path: None,
+                original_filename: Some("Song.mp3".to_string()),
+                checksum: Some(new_id()),
+                audio_fingerprint: Some("fingerprint".to_string()),
+                format: Some("mp3".to_string()),
+                bitrate_kbps: Some(320),
+                sample_rate_hz: Some(48_000),
+                duration_ms: Some(180_000),
+                file_size: Some(8_000_000),
+                dynamic_range: Some(8.5),
+                integrated_lufs: Some(-11.2),
+                true_peak_db: Some(0.2),
+                replaygain_track_gain_db: Some(-4.7),
+                replaygain_album_gain_db: Some(-3.2),
+                clipping_risk: true,
+                quality_score: Some(72),
+                true_lossless_verified: false,
+                suspected_transcode: false,
+                original_tags_json: None,
+            })
+            .expect("asset");
+
+        assert_eq!(asset.integrated_lufs, Some(-11.2));
+        assert_eq!(asset.true_peak_db, Some(0.2));
+        assert_eq!(asset.dynamic_range, Some(8.5));
+        assert_eq!(asset.replaygain_track_gain_db, Some(-4.7));
+        assert_eq!(asset.replaygain_album_gain_db, Some(-3.2));
+        assert!(asset.clipping_risk);
     }
 
     #[test]
