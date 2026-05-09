@@ -1,0 +1,19 @@
+[package]
+name = "music-os-tauri"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "music_os_tauri"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = "2.6.1"
+
+[dependencies]
+anyhow = "1.0.102"
+music-os-core = { path = "../crates/music-os-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tauri = { version = "2.11.1", features = ["custom-protocol"] }
