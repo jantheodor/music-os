@@ -139,6 +139,33 @@ p {
   padding: 1rem 1.25rem;
 }
 
+.drop-zone {
+  display: grid;
+  place-items: center;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  border: 2px dashed rgba(247, 200, 115, 0.42);
+  border-radius: 1.25rem;
+  padding: 1.25rem;
+  color: #dbcdb4;
+  background: rgba(247, 200, 115, 0.06);
+  text-align: center;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.drop-zone strong {
+  color: #f7c873;
+}
+
+.drop-zone.dragging {
+  border-color: #f7c873;
+  background: rgba(247, 200, 115, 0.16);
+  transform: scale(1.01);
+}
+
 .error {
   margin: 0.5rem 0 0;
   color: #ffb4a9;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 
 type RepresentationRole = "first_found" | "nostalgia" | "variant";
@@ -115,6 +116,7 @@ function App() {
   });
   const [ratingDraft, setRatingDraft] = useState("");
   const [tagDraft, setTagDraft] = useState("");
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [status, setStatus] = useState("Ready to preserve, optimize, and find music.");
   const [error, setError] = useState<string | null>(null);
 
@@ -153,6 +155,29 @@ function App() {
   useEffect(() => {
     void refreshTracks();
   }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setIsDraggingOver(true);
+        } else if (event.payload.type === "leave") {
+          setIsDraggingOver(false);
+        } else if (event.payload.type === "drop") {
+          setIsDraggingOver(false);
+          void importDroppedPaths(event.payload.paths);
+        }
+      })
+      .then((handler) => {
+        unlisten = handler;
+      })
+      .catch((caught) => setError(formatError(caught)));
+
+    return () => {
+      unlisten?.();
+    };
+  }, [folderForm.userRating, folderForm.semanticTags]);
 
   useEffect(() => {
     if (!selectedTrack) {
@@ -222,6 +247,63 @@ function App() {
       setError(formatError(caught));
       setStatus("Folder import failed.");
     }
+  }
+
+  async function importDroppedPaths(paths: string[]) {
+    if (paths.length === 0) {
+      return;
+    }
+
+    setStatus(`Importing ${paths.length} dropped path${paths.length === 1 ? "" : "s"}...`);
+    setError(null);
+    const aggregate: ImportFolderResult = {
+      scanned_files: 0,
+      imported_files: 0,
+      skipped_files: 0,
+      errors: [],
+    };
+
+    for (const path of paths) {
+      try {
+        if (isSupportedAudioPath(path)) {
+          await invoke("import_music_file", {
+            request: {
+              source_path: path,
+              track_identity_id: null,
+              title: null,
+              artist: null,
+              version: null,
+              role: null,
+              user_rating: optionalNumber(folderForm.userRating),
+              semantic_tags: splitTags(folderForm.semanticTags),
+              original_tags_json: null,
+            },
+          });
+          aggregate.scanned_files += 1;
+          aggregate.imported_files += 1;
+        } else {
+          const result = await invoke<ImportFolderResult>("import_music_folder", {
+            request: {
+              root_path: path,
+              user_rating: optionalNumber(folderForm.userRating),
+              semantic_tags: splitTags(folderForm.semanticTags),
+            },
+          });
+          aggregate.scanned_files += result.scanned_files;
+          aggregate.imported_files += result.imported_files;
+          aggregate.skipped_files += result.skipped_files;
+          aggregate.errors.push(...result.errors);
+        }
+      } catch (caught) {
+        aggregate.errors.push({ path, error: formatError(caught) });
+      }
+    }
+
+    setLastFolderImport(aggregate);
+    setStatus(
+      `Drop import complete: ${aggregate.imported_files} imported, ${aggregate.skipped_files} skipped, ${aggregate.errors.length} errors.`,
+    );
+    await refreshTracks();
   }
 
   async function updateRating(event: React.FormEvent<HTMLFormElement>) {
@@ -328,6 +410,14 @@ function App() {
       <section className="notice" aria-live="polite">
         <strong>Status:</strong> {status}
         {error && <p className="error">{error}</p>}
+      </section>
+
+      <section className={isDraggingOver ? "drop-zone dragging" : "drop-zone"}>
+        <strong>Drag & drop music here</strong>
+        <span>
+          Drop audio files or folders. Default rating/tags from the folder import
+          form are applied.
+        </span>
       </section>
 
       <div className="grid">
@@ -746,6 +836,10 @@ function splitTags(value: string) {
 
 function normalizeTag(value: string) {
   return value.trim().replace(/^#/, "").toLowerCase();
+}
+
+function isSupportedAudioPath(path: string) {
+  return /\.(mp3|flac|wav|aiff|aif|m4a|aac|ogg|opus)$/i.test(path);
 }
 
 function label(value: string) {
